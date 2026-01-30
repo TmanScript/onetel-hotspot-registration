@@ -21,6 +21,8 @@ import {
   RefreshCw,
   AlertTriangle,
   Fingerprint,
+  WifiOff,
+  ServerCrash,
 } from "lucide-react";
 import CryptoJS from "crypto-js";
 import Input from "./components/Input";
@@ -103,6 +105,7 @@ const App: React.FC = () => {
         const res = await fetch(url, {
           signal: controller.signal,
           cache: "no-cache",
+          mode: "cors",
         });
         clearTimeout(timeoutId);
 
@@ -131,7 +134,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     runDiagnostics();
-    const interval = setInterval(runDiagnostics, 45000);
+    const interval = setInterval(runDiagnostics, 60000);
     return () => clearInterval(interval);
   }, [runDiagnostics]);
 
@@ -173,7 +176,6 @@ const App: React.FC = () => {
 
   const handleLoginChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    // Always trim input to avoid credential errors from trailing spaces
     setLoginData((prev) => ({ ...prev, [name]: value.trim() }));
   };
 
@@ -211,9 +213,12 @@ const App: React.FC = () => {
         );
       }
     } catch (err: any) {
-      setErrorMessage(err.message);
+      setErrorMessage(
+        err.message === "Failed to fetch"
+          ? "Router blocked the connection. Try again."
+          : err.message,
+      );
       setBridgeHistory([...lastBridgeLogs]);
-      runDiagnostics();
     } finally {
       setIsSubmitting(false);
     }
@@ -276,13 +281,18 @@ const App: React.FC = () => {
           setStep("SUCCESS");
         }
       } else {
-        // If we get "Incorrect phone number or password", it's a 401.
-        // We show it but also log that the server was successfully contacted.
         setErrorMessage(data.detail || "Incorrect phone number or password.");
         setBridgeHistory([...lastBridgeLogs]);
       }
     } catch (err: any) {
-      setErrorMessage(err.message);
+      // Common browser error when CORS preflight (OPTIONS) is blocked
+      if (err.message === "Failed to fetch") {
+        setErrorMessage(
+          "Connection Interrupted. The hotspot router is blocking the secure login path.",
+        );
+      } else {
+        setErrorMessage(err.message);
+      }
       setBridgeHistory([...lastBridgeLogs]);
       runDiagnostics();
     } finally {
@@ -357,13 +367,18 @@ const App: React.FC = () => {
       return (
         <div className="max-w-4xl w-full grid grid-cols-1 lg:grid-cols-2 bg-white rounded-[2.5rem] shadow-2xl overflow-hidden border border-pink-100">
           <div className="hidden lg:flex flex-col justify-between p-12 bg-pink-500 text-white relative overflow-hidden">
-            <h2 className="text-4xl font-bold leading-tight mb-6">
-              Join Onetel
-            </h2>
+            <div className="relative z-10">
+              <div className="flex items-center gap-2 mb-4 bg-white/20 w-fit px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
+                <WifiOff className="w-3 h-3" /> No Internet mode active
+              </div>
+              <h2 className="text-4xl font-bold leading-tight mb-6">
+                Join Onetel
+              </h2>
+            </div>
             <div className="relative z-10 space-y-4">
               <div className="bg-black/10 backdrop-blur-md rounded-2xl p-4 border border-white/10">
                 <p className="text-[10px] font-black uppercase tracking-widest mb-3 text-pink-100 flex items-center justify-between">
-                  Live Status{" "}
+                  Live Diagnostics{" "}
                   <RefreshCw
                     onClick={runDiagnostics}
                     className="w-2.5 h-2.5 cursor-pointer hover:rotate-180 transition-transform"
@@ -385,7 +400,7 @@ const App: React.FC = () => {
                         {d.status === "ok"
                           ? `${d.latency}ms`
                           : d.status === "intercepted"
-                            ? "TRAPPED"
+                            ? "INTERCEPTED"
                             : "BLOCKED"}
                       </span>
                     </div>
@@ -568,17 +583,22 @@ const App: React.FC = () => {
     return (
       <div className="max-w-4xl w-full grid grid-cols-1 lg:grid-cols-2 bg-white rounded-[2.5rem] shadow-2xl overflow-hidden border border-pink-100">
         <div className="hidden lg:flex flex-col justify-between p-12 bg-pink-500 text-white relative overflow-hidden">
-          <h2 className="text-4xl font-bold leading-tight mb-6">
-            Fast WiFi
-            <br />
-            Everywhere
-          </h2>
+          <div className="relative z-10">
+            <div className="flex items-center gap-2 mb-4 bg-white/20 w-fit px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
+              <WifiOff className="w-3 h-3" /> Walled Garden Mode
+            </div>
+            <h2 className="text-4xl font-bold leading-tight mb-6">
+              Fast WiFi
+              <br />
+              Everywhere
+            </h2>
+          </div>
 
           <div className="relative z-10 space-y-4">
             <div className="bg-black/10 backdrop-blur-md rounded-2xl p-5 border border-white/10 shadow-inner">
               <div className="flex items-center justify-between mb-4">
                 <p className="text-[10px] font-black uppercase tracking-widest text-pink-100 flex items-center gap-2">
-                  <Activity className="w-3 h-3" /> Connection Monitor
+                  <Activity className="w-3 h-3" /> Portal Paths
                 </p>
                 {bridgeHistory.length > 0 && (
                   <button
@@ -586,7 +606,7 @@ const App: React.FC = () => {
                     className="text-[9px] font-black uppercase tracking-widest text-white underline flex items-center gap-1"
                   >
                     <History className="w-3 h-3" />{" "}
-                    {showLogs ? "Diagnostics" : "Log"}
+                    {showLogs ? "Back" : "Debug Log"}
                   </button>
                 )}
               </div>
@@ -604,7 +624,9 @@ const App: React.FC = () => {
                           {log.timestamp}
                         </span>
                       </div>
-                      <div className="text-white/80 mt-1">{log.error}</div>
+                      <div className="text-white/80 mt-1 break-all">
+                        {log.error}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -628,7 +650,7 @@ const App: React.FC = () => {
                           {d.status === "ok"
                             ? `${d.latency}ms`
                             : d.status === "intercepted"
-                              ? "Trapped"
+                              ? "Intercepted"
                               : "Blocked"}
                         </span>
                       </div>
@@ -669,21 +691,17 @@ const App: React.FC = () => {
                 <XCircle className="w-5 h-5 mt-0.5 shrink-0" />
                 <div className="flex-1">
                   <span className="leading-relaxed">{errorMessage}</span>
-                  {errorMessage.includes("Incorrect") && (
-                    <div className="mt-2 p-2 bg-pink-100 rounded-lg text-pink-700 flex items-center gap-2">
-                      <Fingerprint className="w-3 h-3" />
-                      <span className="text-[10px]">
-                        Double check your phone number format (with + prefix).
-                      </span>
-                    </div>
-                  )}
-                  {errorMessage.includes("trapped") && (
-                    <div className="mt-2 p-2 bg-orange-100 rounded-lg text-orange-700 flex items-center gap-2">
-                      <AlertTriangle className="w-3 h-3" />
-                      <span className="text-[10px]">
-                        The router is hijacking your connection. Check the log
-                        for details.
-                      </span>
+                  {(errorMessage.includes("blocked") ||
+                    errorMessage.includes("fetch")) && (
+                    <div className="mt-2 p-2 bg-orange-100 rounded-lg text-orange-700 space-y-1">
+                      <div className="flex items-center gap-2 font-black uppercase text-[8px]">
+                        <AlertTriangle className="w-3 h-3" /> Browser Block
+                        Detected
+                      </div>
+                      <p className="text-[9px] leading-tight">
+                        The router's Walled Garden is mangling the request.
+                        Check your <b>uamallowed</b> settings below.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -727,7 +745,8 @@ const App: React.FC = () => {
         <div className="mt-8 max-w-xl w-full bg-white border-2 border-pink-100 rounded-[2rem] p-6 shadow-xl animate-in slide-in-from-bottom-8">
           <div className="flex items-center justify-between mb-4">
             <h4 className="text-[10px] font-black text-gray-800 uppercase tracking-widest flex items-center gap-2">
-              <Info className="w-4 h-4 text-pink-500" /> Connection Help
+              <ServerCrash className="w-4 h-4 text-pink-500" /> Walled Garden
+              Recovery
             </h4>
             <button
               onClick={() => setShowHelper(false)}
@@ -737,8 +756,8 @@ const App: React.FC = () => {
             </button>
           </div>
           <p className="text-[10px] text-gray-500 mb-3 font-medium">
-            To fix "Trapped" or "Blocked" errors, ensure these are allowed in
-            OpenWISP:
+            If login fails, ensure these domains are in your router's{" "}
+            <b>uamallowed</b> list:
           </p>
           <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 flex gap-2 items-center">
             <code className="text-[9px] font-mono text-gray-500 truncate flex-1 leading-none">
@@ -756,7 +775,7 @@ const App: React.FC = () => {
 
       <p className="mt-8 text-center text-gray-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
         <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
-        Onetel Network • Resilience Core v4.9
+        Onetel Network • Resilience Core v5.0 (Preflight-Free)
       </p>
     </div>
   );

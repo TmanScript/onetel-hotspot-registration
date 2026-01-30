@@ -25,15 +25,25 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * FETCH WITH RESILIENCE
- * Optimized for Onetel API which requires strict JSON parsing.
+ * Converts an object to application/x-www-form-urlencoded string.
+ * This format is a "Simple Request" type in CORS, which bypasses the preflight (OPTIONS) check.
+ */
+function toFormData(obj: any): string {
+  return Object.keys(obj)
+    .map((key) => encodeURIComponent(key) + "=" + encodeURIComponent(obj[key]))
+    .join("&");
+}
+
+/**
+ * FETCH WITH RESILIENCE v5.0
+ * Uses "Simple Requests" for Direct Connect to bypass router-level CORS preflight blocks.
  */
 async function fetchWithResilience(
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
   lastBridgeLogs = [];
-  let lastError: any = new Error("No bridges attempted");
+  let lastError: any = new Error("Connection failed");
 
   for (const bridge of BRIDGES) {
     try {
@@ -42,23 +52,41 @@ async function fetchWithResilience(
         ? targetUrl
         : `${bridge.proxy}${encodeURIComponent(targetUrl)}`;
 
-      // AllOrigins is GET only for the raw proxy
       if (bridge.type === "allorigins" && options.method !== "GET") continue;
 
       const controller = new AbortController();
-      const timeout = isDirect ? 3000 : 10000;
+      const timeout = isDirect ? 4000 : 12000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-      // We MUST use application/json or the server won't see the body
+      // STRATEGY:
+      // For Direct Connect, we use application/x-www-form-urlencoded to avoid the browser sending an OPTIONS request.
+      // Hotspot routers (Chilli/OpenWISP) often block or fail OPTIONS requests unless perfectly configured.
+      const useSimple = isDirect && options.method === "POST";
+
       const currentHeaders: Record<string, string> = {
         ...Object.fromEntries(Object.entries(options.headers || {})),
         Accept: "application/json",
-        "Content-Type": "application/json",
       };
+
+      let currentBody = options.body;
+
+      if (useSimple && typeof options.body === "string") {
+        try {
+          const jsonBody = JSON.parse(options.body);
+          currentBody = toFormData(jsonBody);
+          currentHeaders["Content-Type"] = "application/x-www-form-urlencoded";
+        } catch (e) {
+          // Fallback if not JSON
+          currentHeaders["Content-Type"] = "application/json";
+        }
+      } else {
+        currentHeaders["Content-Type"] = "application/json";
+      }
 
       const response = await fetch(fullUrl, {
         ...options,
         headers: currentHeaders,
+        body: currentBody,
         signal: controller.signal,
         mode: "cors",
         credentials: "omit",
@@ -66,22 +94,15 @@ async function fetchWithResilience(
 
       clearTimeout(timeoutId);
 
-      // Detect if we hit the router login page instead of the API
+      // Interception Detection
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("Walled Garden: Router intercepted request.");
+        throw new Error(
+          "Walled Garden Intercepted: Check your uamallowed settings.",
+        );
       }
 
-      // If we got a 401/403, the server definitely received the request
-      if (response.status === 401 || response.status === 403) {
-        lastBridgeLogs.push({
-          bridge: bridge.name,
-          error: "Server Reached: Credentials Rejected (401)",
-          timestamp: new Date().toLocaleTimeString(),
-        });
-        return response;
-      }
-
+      // If we got a real status from the API server, return it immediately
       if (response.status > 0) return response;
     } catch (err: any) {
       const errorMsg = err.name === "AbortError" ? "Timed out" : err.message;
@@ -96,8 +117,9 @@ async function fetchWithResilience(
       });
       lastError = err;
 
-      if (err.name === "AbortError" || err.message.includes("intercepted"))
-        continue;
+      // If direct failed but it wasn't a timeout, it's likely a CORS preflight block
+      // The proxies will attempt standard JSON POSTs
+      continue;
     }
   }
 
