@@ -20,6 +20,7 @@ import {
   History,
   RefreshCw,
   AlertTriangle,
+  Fingerprint,
 } from "lucide-react";
 import CryptoJS from "crypto-js";
 import Input from "./components/Input";
@@ -172,7 +173,8 @@ const App: React.FC = () => {
 
   const handleLoginChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setLoginData((prev) => ({ ...prev, [name]: value }));
+    // Always trim input to avoid credential errors from trailing spaces
+    setLoginData((prev) => ({ ...prev, [name]: value.trim() }));
   };
 
   const parseResponse = async (response: Response) => {
@@ -274,7 +276,10 @@ const App: React.FC = () => {
           setStep("SUCCESS");
         }
       } else {
+        // If we get "Incorrect phone number or password", it's a 401.
+        // We show it but also log that the server was successfully contacted.
         setErrorMessage(data.detail || "Incorrect phone number or password.");
+        setBridgeHistory([...lastBridgeLogs]);
       }
     } catch (err: any) {
       setErrorMessage(err.message);
@@ -664,12 +669,20 @@ const App: React.FC = () => {
                 <XCircle className="w-5 h-5 mt-0.5 shrink-0" />
                 <div className="flex-1">
                   <span className="leading-relaxed">{errorMessage}</span>
+                  {errorMessage.includes("Incorrect") && (
+                    <div className="mt-2 p-2 bg-pink-100 rounded-lg text-pink-700 flex items-center gap-2">
+                      <Fingerprint className="w-3 h-3" />
+                      <span className="text-[10px]">
+                        Double check your phone number format (with + prefix).
+                      </span>
+                    </div>
+                  )}
                   {errorMessage.includes("trapped") && (
                     <div className="mt-2 p-2 bg-orange-100 rounded-lg text-orange-700 flex items-center gap-2">
                       <AlertTriangle className="w-3 h-3" />
                       <span className="text-[10px]">
-                        Your router is blocking the app. Please refresh and try
-                        again.
+                        The router is hijacking your connection. Check the log
+                        for details.
                       </span>
                     </div>
                   )}
@@ -743,7 +756,7 @@ const App: React.FC = () => {
 
       <p className="mt-8 text-center text-gray-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
         <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
-        Onetel Network • Resilience Core v4.8
+        Onetel Network • Resilience Core v4.9
       </p>
     </div>
   );

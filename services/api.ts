@@ -26,7 +26,7 @@ export let lastBridgeLogs: BridgeError[] = [];
 
 /**
  * FETCH WITH RESILIENCE
- * Tries multiple bridges and multiple request formats to find a path through the Walled Garden.
+ * Optimized for Onetel API which requires strict JSON parsing.
  */
 async function fetchWithResilience(
   targetUrl: string,
@@ -36,70 +36,68 @@ async function fetchWithResilience(
   let lastError: any = new Error("No bridges attempted");
 
   for (const bridge of BRIDGES) {
-    // Stage 1: Standard JSON Request (with CORS preflight)
-    // Stage 2: Simple Request (to bypass preflight if Stage 1 fails)
-    const modes = ["json", "simple"];
+    try {
+      const isDirect = bridge.type === "direct";
+      const fullUrl = isDirect
+        ? targetUrl
+        : `${bridge.proxy}${encodeURIComponent(targetUrl)}`;
 
-    for (const mode of modes) {
-      try {
-        const isDirect = bridge.type === "direct";
-        const fullUrl = isDirect
-          ? targetUrl
-          : `${bridge.proxy}${encodeURIComponent(targetUrl)}`;
+      // AllOrigins is GET only for the raw proxy
+      if (bridge.type === "allorigins" && options.method !== "GET") continue;
 
-        // Skip allorigins for POST
-        if (bridge.type === "allorigins" && options.method !== "GET") continue;
+      const controller = new AbortController();
+      const timeout = isDirect ? 3000 : 10000;
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-        const controller = new AbortController();
-        // Give direct requests less time to fail fast, proxies more time
-        const timeout = isDirect ? 3000 : 8000;
-        const timeoutId = setTimeout(() => controller.abort(), timeout);
+      // We MUST use application/json or the server won't see the body
+      const currentHeaders: Record<string, string> = {
+        ...Object.fromEntries(Object.entries(options.headers || {})),
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      };
 
-        const currentHeaders: Record<string, string> = {
-          ...(options.headers as Record<string, string>),
-          Accept: "application/json",
-        };
+      const response = await fetch(fullUrl, {
+        ...options,
+        headers: currentHeaders,
+        signal: controller.signal,
+        mode: "cors",
+        credentials: "omit",
+      });
 
-        // Bypassing preflight: 'text/plain' is a "simple" content-type that doesn't trigger OPTIONS preflight.
-        if (mode === "simple" && options.method === "POST") {
-          currentHeaders["Content-Type"] = "text/plain";
-        }
+      clearTimeout(timeoutId);
 
-        const response = await fetch(fullUrl, {
-          ...options,
-          headers: currentHeaders,
-          signal: controller.signal,
-          mode: "cors",
-          credentials: "omit",
-        });
-
-        clearTimeout(timeoutId);
-
-        // Interception Detection
-        const contentType = response.headers.get("content-type") || "";
-        if (contentType.includes("text/html") && response.status === 200) {
-          throw new Error("Walled Garden Intercepted (HTML returned)");
-        }
-
-        // We accept the response if it's from the API (even 4xx errors are "success" for the bridge)
-        if (response.status > 0) return response;
-      } catch (err: any) {
-        const errorMsg = err.name === "AbortError" ? "Timed out" : err.message;
-        lastBridgeLogs.push({
-          bridge: `${bridge.name} (${mode})`,
-          error: errorMsg,
-          timestamp: new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          }),
-        });
-        lastError = err;
-
-        // If it was a timeout or interception, don't bother with 'simple' mode for this bridge, move to next bridge
-        if (err.name === "AbortError" || err.message.includes("Intercepted"))
-          break;
+      // Detect if we hit the router login page instead of the API
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("text/html") && response.status === 200) {
+        throw new Error("Walled Garden: Router intercepted request.");
       }
+
+      // If we got a 401/403, the server definitely received the request
+      if (response.status === 401 || response.status === 403) {
+        lastBridgeLogs.push({
+          bridge: bridge.name,
+          error: "Server Reached: Credentials Rejected (401)",
+          timestamp: new Date().toLocaleTimeString(),
+        });
+        return response;
+      }
+
+      if (response.status > 0) return response;
+    } catch (err: any) {
+      const errorMsg = err.name === "AbortError" ? "Timed out" : err.message;
+      lastBridgeLogs.push({
+        bridge: bridge.name,
+        error: errorMsg,
+        timestamp: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+      });
+      lastError = err;
+
+      if (err.name === "AbortError" || err.message.includes("intercepted"))
+        continue;
     }
   }
 
@@ -111,7 +109,6 @@ export const registerUser = async (
 ): Promise<Response> => {
   return await fetchWithResilience(API_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
 };
@@ -120,7 +117,6 @@ export const loginUser = async (data: LoginPayload): Promise<Response> => {
   const url = `${API_ENDPOINT}token/`;
   return await fetchWithResilience(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
 };
@@ -138,7 +134,6 @@ export const requestOtp = async (token: string): Promise<Response> => {
   return await fetchWithResilience(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
-    body: "",
   });
 };
 
@@ -149,10 +144,7 @@ export const verifyOtp = async (
   const url = `${API_ENDPOINT}phone/verify/`;
   return await fetchWithResilience(url, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ code }),
   });
 };
