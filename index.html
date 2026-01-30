@@ -1,0 +1,81 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Onetel Hotspot - Sign Up</title>
+    <!-- Favicon data-uri to prevent 404 in console -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌐</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #fdf2f8;
+        }
+        #fallback-message {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            padding: 2rem;
+            background: white;
+            border-radius: 1.5rem;
+            box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1);
+            width: 90%;
+            max-width: 400px;
+            z-index: 9999;
+            border: 2px solid #f472b6;
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "react": "https://esm.sh/react@^19.2.4",
+    "vite": "https://esm.sh/vite@^7.3.1",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "crypto-js": "https://esm.sh/crypto-js@^4.2.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- Diagnostic Fallback -->
+    <div id="fallback-message">
+        <div style="font-size: 3rem; margin-bottom: 1rem;">🌐</div>
+        <h2 style="font-weight: 800; color: #111827; margin-bottom: 0.5rem;">Connection Blocked</h2>
+        <p style="color: #6b7280; font-size: 0.875rem; line-height: 1.25rem; margin-bottom: 1.5rem;">
+            The portal is trying to load but the hotspot is blocking external connections.
+        </p>
+        <div style="background: #fff1f2; padding: 1rem; border-radius: 0.75rem; text-align: left; border: 1px solid #fecdd3;">
+            <p style="font-size: 0.7rem; font-weight: 700; color: #be123c; text-transform: uppercase; margin-bottom: 0.5rem;">Walled Garden Requirement:</p>
+            <p style="font-size: 0.75rem; color: #9f1239; font-family: monospace; word-break: break-all;">
+                Add: <b>device.onetel.co.za, tmanscript.github.io, api.allorigins.win, corsproxy.io, api.codetabs.com</b> to your <b>uamallowed</b> list.
+            </p>
+        </div>
+        <button onclick="window.location.reload()" style="margin-top: 1.5rem; width: 100%; background: #db2777; color: white; padding: 0.75rem; border: none; border-radius: 0.5rem; font-weight: 700; cursor: pointer;">Retry Connection</button>
+    </div>
+
+    <script type="module">
+        // If the root is still empty after 10 seconds, show diagnostics
+        setTimeout(() => {
+            const root = document.getElementById('root');
+            if (root && root.innerHTML.trim() === "") {
+                document.getElementById('fallback-message').style.display = 'block';
+            }
+        }, 10000);
+    </script>
+
+    <script type="module" src="./index.tsx"></script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

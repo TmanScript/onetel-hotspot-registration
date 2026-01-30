@@ -1,0 +1,5 @@
+{
+  "name": "Onetel Hotspot Registration",
+  "description": "A professional, hot-pink themed registration portal for hotspot users, integrating with OpenWISP for account management.",
+  "requestFramePermissions": []
+}
