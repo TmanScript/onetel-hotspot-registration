@@ -2,22 +2,20 @@ import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
 /**
- * CONFIGURATION FOR CAPTIVE PORTAL
- * Update ROUTER_IP if your OpenWISP setup uses a different gateway (e.g., 192.168.1.1)
+ * BRIDGES CONFIGURATION
+ * We use 'tunnel' for AllOrigins because it wraps the response to bypass CORS entirely.
+ * We use 'standard' for others that just act as a relay.
  */
-const ROUTER_IP = "10.1.0.1";
-const CHILLI_JSON_API = `http://${ROUTER_IP}:3990/json/status`;
-
 export const BRIDGES = [
   { name: "Direct Cloud", proxy: "", type: "direct" },
   {
-    name: "Rescue Shadow (Raw)",
-    proxy: "https://api.allorigins.win/raw?url=",
-    type: "raw",
+    name: "Rescue Shadow (AllOrigins)",
+    proxy: "https://api.allorigins.win/get?url=",
+    type: "tunnel",
   },
   {
-    name: "Mirror Path A",
-    proxy: "https://corsproxy.io/?",
+    name: "Mirror Path (Codetabs)",
+    proxy: "https://api.codetabs.com/v1/proxy/?quest=",
     type: "standard",
   },
 ];
@@ -31,21 +29,29 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * HELPER: Checks if we are actually connected to the Chilli Router
- * This works even without internet.
+ * SHADOW UNWRAPPER
+ * AllOrigins wraps the API response in a JSON object. This extracts the real data.
  */
-export async function getChilliStatus() {
-  try {
-    const res = await fetch(CHILLI_JSON_API, { mode: "cors" });
-    return await res.json();
-  } catch (e) {
-    return { clientState: -1, message: "Not on Portal Network" };
+async function unwrapResponse(
+  response: Response,
+  type: string,
+): Promise<Response> {
+  if (type === "tunnel") {
+    const json = await response.json();
+    if (json.contents) {
+      // Reconstruct a standard Response object from the tunneled contents
+      return new Response(json.contents, {
+        status: json.status?.http_code || 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
   }
+  return response;
 }
 
 /**
- * FETCH WITH SHADOW RESILIENCE v6.0
- * Handles "Secure Login Blocked" by detecting hijacking before SSL handshake.
+ * FETCH WITH SHADOW RESILIENCE v7.0
+ * Bypasses CORS Preflight and handles Captive Portal Hijacking.
  */
 async function fetchWithResilience(
   targetUrl: string,
@@ -53,23 +59,14 @@ async function fetchWithResilience(
 ): Promise<Response> {
   lastBridgeLogs = [];
 
-  // STEP 1: PRE-FLIGHT CHECK (Prevent SSL Error Trap)
-  // We fetch a non-secure URL. If it returns HTML, the router is hijacking us.
-  try {
-    const probe = await fetch(`http://neverssl.com?_=${Date.now()}`, {
-      mode: "no-cors",
-    });
-    // If the probe fails or behaves weirdly, we proceed, but this is a hint.
-  } catch (e) {
-    console.warn("Portal redirect detected or network offline");
-  }
-
+  // Track failures to try next bridge
   const attempts = BRIDGES.map(async (bridge) => {
     try {
       const isDirect = bridge.type === "direct";
-      const isRaw = bridge.type === "raw";
+      const isTunnel = bridge.type === "tunnel";
 
-      const buster = `_shadow=${Date.now()}`;
+      // Aggressive cache busting to prevent router from serving cached 302s
+      const buster = `_ts=${Date.now()}`;
       const urlWithBuster = targetUrl.includes("?")
         ? `${targetUrl}&${buster}`
         : `${targetUrl}?${buster}`;
@@ -79,65 +76,75 @@ async function fetchWithResilience(
         : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
 
       const controller = new AbortController();
-      const timeout = isDirect ? 6000 : 20000;
-      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      const timeoutId = setTimeout(
+        () => controller.abort(),
+        isDirect ? 5000 : 15000,
+      );
 
-      const currentHeaders: Record<string, string> = {
-        ...Object.fromEntries(Object.entries(options.headers || {})),
-        Accept: "application/json",
-      };
-
+      /**
+       * CORS PREFLIGHT BYPASS STRATEGY:
+       * If using a bridge, we avoid "application/json" content-type because it triggers
+       * a CORS OPTIONS request which many proxies/routers block.
+       * Instead, for Tunnels, we move the payload to the URL.
+       */
       let fetchOptions: RequestInit = {
         ...options,
         signal: controller.signal,
         mode: "cors",
       };
 
-      // Handle POST tunneling for restrictive proxies
-      if (isRaw && options.method === "POST") {
-        // Some proxies only allow GET, so we tunnel POST body as a query param
-        fullUrl += `&payload=${encodeURIComponent(options.body as string)}`;
-        fetchOptions.method = "GET";
-      } else {
-        fetchOptions.headers = currentHeaders;
+      if (!isDirect) {
+        // Simple request optimization: strip custom headers
+        fetchOptions.headers = { Accept: "application/json" };
+
         if (options.method === "POST") {
-          currentHeaders["Content-Type"] = "application/json";
+          if (isTunnel) {
+            // AllOrigins Tunnel: Convert POST to GET to bypass CORS Preflight
+            fullUrl += `&payload=${encodeURIComponent(options.body as string)}`;
+            fetchOptions.method = "GET";
+            delete fetchOptions.body;
+          } else {
+            // Standard Proxy: keep POST but use simple content type
+            (fetchOptions.headers as any)["Content-Type"] = "text/plain";
+          }
         }
+      } else {
+        // Direct attempt: Standard headers
+        fetchOptions.headers = {
+          ...options.headers,
+          "Content-Type": "application/json",
+        };
       }
 
       const response = await fetch(fullUrl, fetchOptions);
       clearTimeout(timeoutId);
 
-      // STEP 2: CAPTIVE PORTAL DETECTION
+      // Check for Captive Portal hijacking (returns HTML instead of JSON)
       const contentType = response.headers.get("content-type") || "";
-
-      // If the router sends HTML instead of JSON, it's the Login Page
-      if (contentType.includes("text/html") || response.status === 302) {
-        throw new Error(
-          "PORTAL_REJECTION: Router is blocking access. Please log in to Wi-Fi.",
-        );
+      if (contentType.includes("text/html") && response.status === 200) {
+        throw new Error("PORTAL_BLOCK: Router intercepted request");
       }
 
-      if (response.ok || response.status < 500) return response;
+      // Handle Proxy wrapping
+      const finalResponse = await unwrapResponse(response, bridge.type);
 
-      throw new Error(`Bridge Rejected (${response.status})`);
+      if (finalResponse.ok || finalResponse.status < 500) {
+        return finalResponse;
+      }
+
+      throw new Error(`Status ${finalResponse.status}`);
     } catch (err: any) {
-      let friendlyError = err.message;
-      if (err.name === "AbortError")
-        friendlyError = "Connection Timeout (DNS Fail)";
-      if (err.message.includes("Failed to fetch"))
-        friendlyError = "SSL Blocked/Clock Error";
-
+      const errorMsg = err.name === "AbortError" ? "Timeout" : err.message;
       lastBridgeLogs.push({
         bridge: bridge.name,
-        error: friendlyError,
+        error: errorMsg,
         timestamp: new Date().toLocaleTimeString(),
       });
       throw err;
     }
   });
 
-  // Racing the bridges: First successful response wins
+  // Racing the bridges: Return the first one that succeeds
   return new Promise((resolve, reject) => {
     let failedCount = 0;
     let resolved = false;
@@ -151,10 +158,10 @@ async function fetchWithResilience(
       }).catch(() => {
         failedCount++;
         if (failedCount === attempts.length && !resolved) {
-          const logs = lastBridgeLogs
+          const details = lastBridgeLogs
             .map((l) => `${l.bridge}: ${l.error}`)
             .join(" | ");
-          reject(new Error(`Network Blocked: ${logs}`));
+          reject(new Error(`All paths blocked by router. Details: ${details}`));
         }
       });
     });
@@ -162,7 +169,7 @@ async function fetchWithResilience(
 }
 
 /**
- * API EXPORTS
+ * EXPORTED API FUNCTIONS
  */
 
 export const registerUser = async (
@@ -175,21 +182,24 @@ export const registerUser = async (
 };
 
 export const loginUser = async (data: LoginPayload): Promise<Response> => {
-  return await fetchWithResilience(`${API_ENDPOINT}token/`, {
+  const url = `${API_ENDPOINT}token/`;
+  return await fetchWithResilience(url, {
     method: "POST",
     body: JSON.stringify(data),
   });
 };
 
 export const getUsage = async (token: string): Promise<Response> => {
-  return await fetchWithResilience(`${API_ENDPOINT}usage/`, {
+  const url = `${API_ENDPOINT}usage/`;
+  return await fetchWithResilience(url, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
   });
 };
 
 export const requestOtp = async (token: string): Promise<Response> => {
-  return await fetchWithResilience(`${API_ENDPOINT}phone/token/`, {
+  const url = `${API_ENDPOINT}phone/token/`;
+  return await fetchWithResilience(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -199,7 +209,8 @@ export const verifyOtp = async (
   token: string,
   code: string,
 ): Promise<Response> => {
-  return await fetchWithResilience(`${API_ENDPOINT}phone/verify/`, {
+  const url = `${API_ENDPOINT}phone/verify/`;
+  return await fetchWithResilience(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ code }),
