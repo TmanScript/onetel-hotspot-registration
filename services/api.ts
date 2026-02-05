@@ -2,15 +2,20 @@ import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
 export const BRIDGES = [
-  { name: "Primary Path", proxy: "", type: "direct" },
+  { name: "Direct Cloud", proxy: "", type: "direct" },
   {
-    name: "Tunnel Bridge",
+    name: "Rescue Shadow (Raw)",
+    proxy: "https://api.allorigins.win/raw?url=",
+    type: "raw",
+  },
+  {
+    name: "Tunnel Shadow (Get)",
     proxy: "https://api.allorigins.win/get?url=",
     type: "tunnel",
   },
-  { name: "Cloud Path A", proxy: "https://corsproxy.io/?", type: "standard" },
+  { name: "Mirror Path A", proxy: "https://corsproxy.io/?", type: "standard" },
   {
-    name: "Cloud Path B",
+    name: "Mirror Path B",
     proxy: "https://api.codetabs.com/v1/proxy/?quest=",
     type: "standard",
   },
@@ -25,8 +30,8 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * FETCH WITH TUNNELING RESILIENCE v5.3
- * Disguises requests to pass through aggressive router filters.
+ * FETCH WITH SHADOW RESILIENCE v5.4
+ * Sophisticated unwrapping and multi-path execution.
  */
 async function fetchWithResilience(
   targetUrl: string,
@@ -38,9 +43,10 @@ async function fetchWithResilience(
     try {
       const isDirect = bridge.type === "direct";
       const isTunnel = bridge.type === "tunnel";
+      const isRaw = bridge.type === "raw";
 
-      // Add a high-entropy cache buster to every single path
-      const buster = `_ts=${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      // Aggressive cache busting
+      const buster = `_shadow=${Date.now()}_${Math.random().toString(36).substring(5)}`;
       const urlWithBuster = targetUrl.includes("?")
         ? `${targetUrl}&${buster}`
         : `${targetUrl}?${buster}`;
@@ -50,7 +56,8 @@ async function fetchWithResilience(
         : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
 
       const controller = new AbortController();
-      const timeout = isDirect ? 4000 : 18000;
+      // Increase timeout for slow hotspot DNS
+      const timeout = isDirect ? 5000 : 25000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       const currentHeaders: Record<string, string> = {
@@ -65,18 +72,12 @@ async function fetchWithResilience(
         credentials: "omit",
       };
 
-      /**
-       * TUNNELING STRATEGY (The "Silver Bullet"):
-       * If we use the 'tunnel' bridge, we convert the POST into a GET request
-       * with the payload as a query parameter. This bypasses 99% of router-level
-       * POST blocks because it looks like a standard web page load.
-       */
-      if (isTunnel && options.method === "POST") {
+      // v5.4 Strategy: GET-Tunneling for POSTs
+      if ((isTunnel || isRaw) && options.method === "POST") {
         const tunnelUrl = `${bridge.proxy}${encodeURIComponent(urlWithBuster)}&payload=${encodeURIComponent(options.body as string)}`;
         fullUrl = tunnelUrl;
         fetchOptions = { method: "GET", signal: controller.signal };
       } else if (isDirect && options.method === "POST") {
-        // Simple request to bypass preflight
         currentHeaders["Content-Type"] = "text/plain";
         fetchOptions.headers = currentHeaders;
       } else {
@@ -84,19 +85,34 @@ async function fetchWithResilience(
         fetchOptions.headers = currentHeaders;
       }
 
-      const response = await fetch(fullUrl, { ...fetchOptions });
+      const response = await fetch(fullUrl, fetchOptions);
       clearTimeout(timeoutId);
 
-      // Detection of Hotspot Login Page Interception
+      // Detection of Hotspot Interception
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("Router Intercepted (Walled Garden Block)");
+        throw new Error("Router Hijacked: Return HTML instead of Data");
+      }
+
+      /**
+       * SHADOW UNWRAPPER:
+       * If we used the 'tunnel' bridge, the response is a JSON object with a 'contents' key.
+       * We need to "unwrap" it to get the actual Onetel API response.
+       */
+      if (isTunnel) {
+        const wrapper = await response.json();
+        if (wrapper.contents) {
+          return new Response(wrapper.contents, {
+            status: wrapper.status?.http_code || 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
       }
 
       if (response.status > 0) return response;
-      throw new Error(`Failed with status ${response.status}`);
+      throw new Error(`Path Rejected (${response.status})`);
     } catch (err: any) {
-      const msg = err.name === "AbortError" ? "Path Timed Out" : err.message;
+      const msg = err.name === "AbortError" ? "DNS/Path Timeout" : err.message;
       lastBridgeLogs.push({
         bridge: bridge.name,
         error: msg,
@@ -119,10 +135,11 @@ async function fetchWithResilience(
       }).catch(() => {
         failedCount++;
         if (failedCount === attempts.length && !resolved) {
+          const detailedErrors = lastBridgeLogs
+            .map((l) => `[${l.bridge}: ${l.error}]`)
+            .join(" ");
           reject(
-            new Error(
-              "The Hotspot Router is actively blocking all secure login paths. Please ensure your uamallowed list is correctly saved and the router has been restarted.",
-            ),
+            new Error(`All paths blocked by router. Logs: ${detailedErrors}`),
           );
         }
       });
