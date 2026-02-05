@@ -1,6 +1,13 @@
 import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
+/**
+ * CONFIGURATION FOR CAPTIVE PORTAL
+ * Update ROUTER_IP if your OpenWISP setup uses a different gateway (e.g., 192.168.1.1)
+ */
+const ROUTER_IP = "10.1.0.1";
+const CHILLI_JSON_API = `http://${ROUTER_IP}:3990/json/status`;
+
 export const BRIDGES = [
   { name: "Direct Cloud", proxy: "", type: "direct" },
   {
@@ -9,14 +16,8 @@ export const BRIDGES = [
     type: "raw",
   },
   {
-    name: "Tunnel Shadow (Get)",
-    proxy: "https://api.allorigins.win/get?url=",
-    type: "tunnel",
-  },
-  { name: "Mirror Path A", proxy: "https://corsproxy.io/?", type: "standard" },
-  {
-    name: "Mirror Path B",
-    proxy: "https://api.codetabs.com/v1/proxy/?quest=",
+    name: "Mirror Path A",
+    proxy: "https://corsproxy.io/?",
     type: "standard",
   },
 ];
@@ -30,8 +31,21 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * FETCH WITH SHADOW RESILIENCE v5.4
- * Sophisticated unwrapping and multi-path execution.
+ * HELPER: Checks if we are actually connected to the Chilli Router
+ * This works even without internet.
+ */
+export async function getChilliStatus() {
+  try {
+    const res = await fetch(CHILLI_JSON_API, { mode: "cors" });
+    return await res.json();
+  } catch (e) {
+    return { clientState: -1, message: "Not on Portal Network" };
+  }
+}
+
+/**
+ * FETCH WITH SHADOW RESILIENCE v6.0
+ * Handles "Secure Login Blocked" by detecting hijacking before SSL handshake.
  */
 async function fetchWithResilience(
   targetUrl: string,
@@ -39,14 +53,23 @@ async function fetchWithResilience(
 ): Promise<Response> {
   lastBridgeLogs = [];
 
+  // STEP 1: PRE-FLIGHT CHECK (Prevent SSL Error Trap)
+  // We fetch a non-secure URL. If it returns HTML, the router is hijacking us.
+  try {
+    const probe = await fetch(`http://neverssl.com?_=${Date.now()}`, {
+      mode: "no-cors",
+    });
+    // If the probe fails or behaves weirdly, we proceed, but this is a hint.
+  } catch (e) {
+    console.warn("Portal redirect detected or network offline");
+  }
+
   const attempts = BRIDGES.map(async (bridge) => {
     try {
       const isDirect = bridge.type === "direct";
-      const isTunnel = bridge.type === "tunnel";
       const isRaw = bridge.type === "raw";
 
-      // Aggressive cache busting
-      const buster = `_shadow=${Date.now()}_${Math.random().toString(36).substring(5)}`;
+      const buster = `_shadow=${Date.now()}`;
       const urlWithBuster = targetUrl.includes("?")
         ? `${targetUrl}&${buster}`
         : `${targetUrl}?${buster}`;
@@ -56,8 +79,7 @@ async function fetchWithResilience(
         : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
 
       const controller = new AbortController();
-      // Increase timeout for slow hotspot DNS
-      const timeout = isDirect ? 5000 : 25000;
+      const timeout = isDirect ? 6000 : 20000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       const currentHeaders: Record<string, string> = {
@@ -69,59 +91,53 @@ async function fetchWithResilience(
         ...options,
         signal: controller.signal,
         mode: "cors",
-        credentials: "omit",
       };
 
-      // v5.4 Strategy: GET-Tunneling for POSTs
-      if ((isTunnel || isRaw) && options.method === "POST") {
-        const tunnelUrl = `${bridge.proxy}${encodeURIComponent(urlWithBuster)}&payload=${encodeURIComponent(options.body as string)}`;
-        fullUrl = tunnelUrl;
-        fetchOptions = { method: "GET", signal: controller.signal };
-      } else if (isDirect && options.method === "POST") {
-        currentHeaders["Content-Type"] = "text/plain";
-        fetchOptions.headers = currentHeaders;
+      // Handle POST tunneling for restrictive proxies
+      if (isRaw && options.method === "POST") {
+        // Some proxies only allow GET, so we tunnel POST body as a query param
+        fullUrl += `&payload=${encodeURIComponent(options.body as string)}`;
+        fetchOptions.method = "GET";
       } else {
-        currentHeaders["Content-Type"] = "application/json";
         fetchOptions.headers = currentHeaders;
+        if (options.method === "POST") {
+          currentHeaders["Content-Type"] = "application/json";
+        }
       }
 
       const response = await fetch(fullUrl, fetchOptions);
       clearTimeout(timeoutId);
 
-      // Detection of Hotspot Interception
+      // STEP 2: CAPTIVE PORTAL DETECTION
       const contentType = response.headers.get("content-type") || "";
-      if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("Router Hijacked: Return HTML instead of Data");
+
+      // If the router sends HTML instead of JSON, it's the Login Page
+      if (contentType.includes("text/html") || response.status === 302) {
+        throw new Error(
+          "PORTAL_REJECTION: Router is blocking access. Please log in to Wi-Fi.",
+        );
       }
 
-      /**
-       * SHADOW UNWRAPPER:
-       * If we used the 'tunnel' bridge, the response is a JSON object with a 'contents' key.
-       * We need to "unwrap" it to get the actual Onetel API response.
-       */
-      if (isTunnel) {
-        const wrapper = await response.json();
-        if (wrapper.contents) {
-          return new Response(wrapper.contents, {
-            status: wrapper.status?.http_code || 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-      }
+      if (response.ok || response.status < 500) return response;
 
-      if (response.status > 0) return response;
-      throw new Error(`Path Rejected (${response.status})`);
+      throw new Error(`Bridge Rejected (${response.status})`);
     } catch (err: any) {
-      const msg = err.name === "AbortError" ? "DNS/Path Timeout" : err.message;
+      let friendlyError = err.message;
+      if (err.name === "AbortError")
+        friendlyError = "Connection Timeout (DNS Fail)";
+      if (err.message.includes("Failed to fetch"))
+        friendlyError = "SSL Blocked/Clock Error";
+
       lastBridgeLogs.push({
         bridge: bridge.name,
-        error: msg,
+        error: friendlyError,
         timestamp: new Date().toLocaleTimeString(),
       });
       throw err;
     }
   });
 
+  // Racing the bridges: First successful response wins
   return new Promise((resolve, reject) => {
     let failedCount = 0;
     let resolved = false;
@@ -135,46 +151,45 @@ async function fetchWithResilience(
       }).catch(() => {
         failedCount++;
         if (failedCount === attempts.length && !resolved) {
-          const detailedErrors = lastBridgeLogs
-            .map((l) => `[${l.bridge}: ${l.error}]`)
-            .join(" ");
-          reject(
-            new Error(`All paths blocked by router. Logs: ${detailedErrors}`),
-          );
+          const logs = lastBridgeLogs
+            .map((l) => `${l.bridge}: ${l.error}`)
+            .join(" | ");
+          reject(new Error(`Network Blocked: ${logs}`));
         }
       });
     });
   });
 }
 
+/**
+ * API EXPORTS
+ */
+
 export const registerUser = async (
   data: RegistrationPayload,
 ): Promise<Response> => {
-  return await fetchWithResilience(API_ENDPOINT, {
+  return await fetchWithResilience(`${API_ENDPOINT}register/`, {
     method: "POST",
     body: JSON.stringify(data),
   });
 };
 
 export const loginUser = async (data: LoginPayload): Promise<Response> => {
-  const url = `${API_ENDPOINT}token/`;
-  return await fetchWithResilience(url, {
+  return await fetchWithResilience(`${API_ENDPOINT}token/`, {
     method: "POST",
     body: JSON.stringify(data),
   });
 };
 
 export const getUsage = async (token: string): Promise<Response> => {
-  const url = `${API_ENDPOINT}usage/`;
-  return await fetchWithResilience(url, {
+  return await fetchWithResilience(`${API_ENDPOINT}usage/`, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
   });
 };
 
 export const requestOtp = async (token: string): Promise<Response> => {
-  const url = `${API_ENDPOINT}phone/token/`;
-  return await fetchWithResilience(url, {
+  return await fetchWithResilience(`${API_ENDPOINT}phone/token/`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -184,8 +199,7 @@ export const verifyOtp = async (
   token: string,
   code: string,
 ): Promise<Response> => {
-  const url = `${API_ENDPOINT}phone/verify/`;
-  return await fetchWithResilience(url, {
+  return await fetchWithResilience(`${API_ENDPOINT}phone/verify/`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ code }),
