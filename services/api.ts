@@ -2,22 +2,21 @@ import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
 export const BRIDGES = [
-  { name: "Direct Cloud", proxy: "", type: "direct" },
+  { name: "Direct Path", proxy: "", type: "direct" },
   {
-    name: "Rescue Shadow (Raw)",
-    proxy: "https://api.allorigins.win/raw?url=",
-    type: "raw",
+    name: "Stealth Bridge A",
+    proxy: "https://corsproxy.io/?",
+    type: "standard",
   },
   {
-    name: "Tunnel Shadow (Get)",
-    proxy: "https://api.allorigins.win/get?url=",
-    type: "tunnel",
-  },
-  { name: "Mirror Path A", proxy: "https://corsproxy.io/?", type: "standard" },
-  {
-    name: "Mirror Path B",
+    name: "Stealth Bridge B",
     proxy: "https://api.codetabs.com/v1/proxy/?quest=",
     type: "standard",
+  },
+  {
+    name: "Rescue Tunnel",
+    proxy: "https://api.allorigins.win/get?url=",
+    type: "tunnel",
   },
 ];
 
@@ -30,8 +29,8 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * FETCH WITH SHADOW RESILIENCE v5.4
- * Sophisticated unwrapping and multi-path execution.
+ * FETCH WITH ADAPTIVE RESILIENCE v5.6
+ * Smart method switching to prevent "Method Not Allowed" errors.
  */
 async function fetchWithResilience(
   targetUrl: string,
@@ -43,10 +42,10 @@ async function fetchWithResilience(
     try {
       const isDirect = bridge.type === "direct";
       const isTunnel = bridge.type === "tunnel";
-      const isRaw = bridge.type === "raw";
+      const isPost = options.method === "POST";
 
-      // Aggressive cache busting
-      const buster = `_shadow=${Date.now()}_${Math.random().toString(36).substring(5)}`;
+      // High-entropy cache busting
+      const buster = `_v=56_${Date.now()}_${Math.random().toString(36).substring(6)}`;
       const urlWithBuster = targetUrl.includes("?")
         ? `${targetUrl}&${buster}`
         : `${targetUrl}?${buster}`;
@@ -56,11 +55,10 @@ async function fetchWithResilience(
         : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
 
       const controller = new AbortController();
-      // Increase timeout for slow hotspot DNS
-      const timeout = isDirect ? 5000 : 25000;
+      const timeout = isDirect ? 6000 : 22000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-      const currentHeaders: Record<string, string> = {
+      const headers: Record<string, string> = {
         ...Object.fromEntries(Object.entries(options.headers || {})),
         Accept: "application/json",
       };
@@ -72,33 +70,36 @@ async function fetchWithResilience(
         credentials: "omit",
       };
 
-      // v5.4 Strategy: GET-Tunneling for POSTs
-      if ((isTunnel || isRaw) && options.method === "POST") {
-        const tunnelUrl = `${bridge.proxy}${encodeURIComponent(urlWithBuster)}&payload=${encodeURIComponent(options.body as string)}`;
-        fullUrl = tunnelUrl;
+      /**
+       * v5.6 ADAPTIVE STRATEGY:
+       * 1. Never use GET-tunneling for POST requests to endpoints that strictly
+       *    require POST (like login/token).
+       * 2. Use 'text/plain' for POSTs on standard bridges to bypass router DPI.
+       */
+      if (isTunnel) {
+        if (isPost) {
+          // AllOrigins doesn't support POST well. We skip it for logins.
+          throw new Error("Bridge incompatible with POST");
+        }
+        // For GET (Usage), use the tunnel.
+        fullUrl = `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
         fetchOptions = { method: "GET", signal: controller.signal };
-      } else if (isDirect && options.method === "POST") {
-        currentHeaders["Content-Type"] = "text/plain";
-        fetchOptions.headers = currentHeaders;
-      } else {
-        currentHeaders["Content-Type"] = "application/json";
-        fetchOptions.headers = currentHeaders;
+      } else if (isPost) {
+        // Use text/plain to bypass router inspection while staying as a POST
+        headers["Content-Type"] = "text/plain";
+        fetchOptions.headers = headers;
       }
 
       const response = await fetch(fullUrl, fetchOptions);
       clearTimeout(timeoutId);
 
-      // Detection of Hotspot Interception
+      // Check for Router Hijacking
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("Router Hijacked: Return HTML instead of Data");
+        throw new Error("Router Hijacked Connection");
       }
 
-      /**
-       * SHADOW UNWRAPPER:
-       * If we used the 'tunnel' bridge, the response is a JSON object with a 'contents' key.
-       * We need to "unwrap" it to get the actual Onetel API response.
-       */
+      // Handle Tunnel Unwrapping
       if (isTunnel) {
         const wrapper = await response.json();
         if (wrapper.contents) {
@@ -109,10 +110,14 @@ async function fetchWithResilience(
         }
       }
 
+      if (response.status === 405) {
+        throw new Error("Method Not Allowed (Bridge Mismatch)");
+      }
+
       if (response.status > 0) return response;
       throw new Error(`Path Rejected (${response.status})`);
     } catch (err: any) {
-      const msg = err.name === "AbortError" ? "DNS/Path Timeout" : err.message;
+      const msg = err.name === "AbortError" ? "DNS Timeout" : err.message;
       lastBridgeLogs.push({
         bridge: bridge.name,
         error: msg,
@@ -135,11 +140,11 @@ async function fetchWithResilience(
       }).catch(() => {
         failedCount++;
         if (failedCount === attempts.length && !resolved) {
-          const detailedErrors = lastBridgeLogs
-            .map((l) => `[${l.bridge}: ${l.error}]`)
-            .join(" ");
+          const errors = lastBridgeLogs.map((l) => l.error).join(" | ");
           reject(
-            new Error(`All paths blocked by router. Logs: ${detailedErrors}`),
+            new Error(
+              `Login Path Blocked. Common cause: Router uamallowed list is missing api.allorigins.win or corsproxy.io. [Trace: ${errors}]`,
+            ),
           );
         }
       });
