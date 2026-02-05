@@ -1,13 +1,7 @@
 import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
-/**
- * BRIDGE CONFIGURATION
- * AllOrigins is the primary "Shadow" because it allows us to turn POSTs into GETs
- * to bypass the CORS Preflight (OPTIONS) block shown in your console logs.
- */
 export const BRIDGES = [
-  { name: "Direct Cloud", proxy: "", type: "direct" },
   {
     name: "Rescue Shadow (AllOrigins)",
     proxy: "https://api.allorigins.win/get?url=",
@@ -18,6 +12,7 @@ export const BRIDGES = [
     proxy: "https://api.codetabs.com/v1/proxy/?quest=",
     type: "standard",
   },
+  { name: "Direct Cloud", proxy: "", type: "direct" }, // Moved to last
 ];
 
 export interface BridgeError {
@@ -29,8 +24,8 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * FETCH WITH SHADOW RESILIENCE v8.0
- * Redesigned to stop CORS Preflight (OPTIONS) blocks and handle Router Hijacking.
+ * FETCH WITH SHADOW RESILIENCE v9.0
+ * Specifically designed to bypass the CORS blocks shown in your console.
  */
 async function fetchWithResilience(
   targetUrl: string,
@@ -38,13 +33,12 @@ async function fetchWithResilience(
 ): Promise<Response> {
   lastBridgeLogs = [];
 
-  // We try bridges one by one (Serial execution) to prevent browser-side network congestion
   for (const bridge of BRIDGES) {
     try {
       const isDirect = bridge.type === "direct";
       const isTunnel = bridge.type === "tunnel";
 
-      // Cache busting ensures the router doesn't serve a cached login page
+      // Cache busting
       const buster = `_ts=${Date.now()}`;
       const urlWithBuster = targetUrl.includes("?")
         ? `${targetUrl}&${buster}`
@@ -60,49 +54,34 @@ async function fetchWithResilience(
         credentials: "omit",
       };
 
-      /**
-       * BYPASSING CORS PREFLIGHT:
-       * Your console logs showed "Response to preflight request doesn't pass access control".
-       * To fix this, we avoid sending 'application/json' via bridges.
-       */
       if (!isDirect) {
+        // BYPASS CORS PREFLIGHT:
+        // We avoid sending 'application/json' which triggers the 'OPTIONS' preflight check.
         if (isTunnel && options.method === "POST") {
-          // AllOrigins Tunnel Strategy:
-          // We attach the JSON body to the URL and use GET.
-          // This is a "Simple Request" that does NOT trigger CORS Preflight.
+          // Convert POST body to a URL parameter for AllOrigins
           fullUrl += `&payload=${encodeURIComponent(options.body as string)}`;
           fetchOptions.method = "GET";
           delete fetchOptions.body;
           fetchOptions.headers = { Accept: "application/json" };
         } else {
-          // Standard Proxy Strategy:
-          // We use text/plain to avoid the "OPTIONS" preflight check.
-          fetchOptions.headers = {
-            "Content-Type": "text/plain",
-            Accept: "application/json",
-          };
+          // Use text/plain to stay as a "Simple Request"
+          fetchOptions.headers = { "Content-Type": "text/plain" };
         }
       } else {
-        // Direct attempt uses standard JSON headers
         fetchOptions.headers = {
           ...options.headers,
           "Content-Type": "application/json",
         };
       }
 
+      console.log(`🚀 Attempting bridge: ${bridge.name}`);
       const response = await fetch(fullUrl, fetchOptions);
 
-      // 1. Detect Router Hijacking (Status 200 but HTML content)
-      const contentType = response.headers.get("content-type") || "";
-      if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("PORTAL_HIJACK: Router is asking for login.");
-      }
-
-      // 2. Unwrap AllOrigins Bridge
+      // Handle AllOrigins Wrapper
       if (isTunnel) {
         const wrapper = await response.json();
         if (wrapper.contents) {
-          // AllOrigins wraps the API response inside 'contents'
+          console.log(`✅ Success via ${bridge.name}`);
           return new Response(wrapper.contents, {
             status: 200,
             headers: { "Content-Type": "application/json" },
@@ -110,32 +89,30 @@ async function fetchWithResilience(
         }
       }
 
-      // 3. Handle Standard Responses
-      if (response.ok) return response;
+      if (response.ok) {
+        console.log(`✅ Success via ${bridge.name}`);
+        return response;
+      }
 
-      // Handle specific error codes
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Error ${response.status}`);
+      throw new Error(`Status ${response.status}`);
     } catch (err: any) {
+      console.warn(`❌ ${bridge.name} failed:`, err.message);
       lastBridgeLogs.push({
         bridge: bridge.name,
-        error: err.message || "Connection Failed",
+        error: err.message,
         timestamp: new Date().toLocaleTimeString(),
       });
-      // Logic continues to loop to the next bridge in the BRIDGES array
     }
   }
 
-  // If we reach here, all bridges failed
-  const lastError =
-    lastBridgeLogs[lastBridgeLogs.length - 1]?.error || "Network Blocked";
-  throw new Error(lastError);
+  throw new Error(
+    "All access paths blocked. Please check Walled Garden settings.",
+  );
 }
 
 /**
- * EXPORTED API ACTIONS
+ * EXPORTS
  */
-
 export const registerUser = async (
   data: RegistrationPayload,
 ): Promise<Response> => {
@@ -145,28 +122,22 @@ export const registerUser = async (
   });
 };
 
-export const loginUser = async (data: {
-  username: string;
-  password: string;
-}): Promise<Response> => {
-  const url = `${API_ENDPOINT}token/`;
-  return await fetchWithResilience(url, {
+export const loginUser = async (data: LoginPayload): Promise<Response> => {
+  return await fetchWithResilience(`${API_ENDPOINT}token/`, {
     method: "POST",
     body: JSON.stringify(data),
   });
 };
 
 export const getUsage = async (token: string): Promise<Response> => {
-  const url = `${API_ENDPOINT}usage/`;
-  return await fetchWithResilience(url, {
+  return await fetchWithResilience(`${API_ENDPOINT}usage/`, {
     method: "GET",
     headers: { Authorization: `Bearer ${token}` },
   });
 };
 
 export const requestOtp = async (token: string): Promise<Response> => {
-  const url = `${API_ENDPOINT}phone/token/`;
-  return await fetchWithResilience(url, {
+  return await fetchWithResilience(`${API_ENDPOINT}phone/token/`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -176,8 +147,7 @@ export const verifyOtp = async (
   token: string,
   code: string,
 ): Promise<Response> => {
-  const url = `${API_ENDPOINT}phone/verify/`;
-  return await fetchWithResilience(url, {
+  return await fetchWithResilience(`${API_ENDPOINT}phone/verify/`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ code }),
