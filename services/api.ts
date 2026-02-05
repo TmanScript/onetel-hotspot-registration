@@ -1,32 +1,23 @@
 import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
-export interface Bridge {
-  name: string;
-  proxy: string;
-  type: "direct" | "standard" | "tunnel";
-  supportsPost: boolean;
-}
-
-export const BRIDGES: Bridge[] = [
-  { name: "Direct Path", proxy: "", type: "direct", supportsPost: true },
+export const BRIDGES = [
+  { name: "Direct Cloud", proxy: "", type: "direct" },
   {
-    name: "Bridge Alpha",
-    proxy: "https://corsproxy.io/?",
-    type: "standard",
-    supportsPost: true,
+    name: "Rescue Shadow (Raw)",
+    proxy: "https://api.allorigins.win/raw?url=",
+    type: "raw",
   },
   {
-    name: "Bridge Beta",
-    proxy: "https://api.codetabs.com/v1/proxy/?quest=",
-    type: "standard",
-    supportsPost: true,
-  },
-  {
-    name: "Data Tunnel",
+    name: "Tunnel Shadow (Get)",
     proxy: "https://api.allorigins.win/get?url=",
     type: "tunnel",
-    supportsPost: false,
+  },
+  { name: "Mirror Path A", proxy: "https://corsproxy.io/?", type: "standard" },
+  {
+    name: "Mirror Path B",
+    proxy: "https://api.codetabs.com/v1/proxy/?quest=",
+    type: "standard",
   },
 ];
 
@@ -39,62 +30,75 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * FETCH WITH UNIVERSAL RESILIENCE v5.7
- * Intelligent bridge filtering based on HTTP Method capability.
+ * FETCH WITH SHADOW RESILIENCE v5.4
+ * Sophisticated unwrapping and multi-path execution.
  */
 async function fetchWithResilience(
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
   lastBridgeLogs = [];
-  const isPost = options.method === "POST";
 
-  // Filter bridges: If we are doing a POST (Login), remove bridges that don't support it.
-  const compatibleBridges = BRIDGES.filter((b) => !isPost || b.supportsPost);
-
-  const attempts = compatibleBridges.map(async (bridge) => {
+  const attempts = BRIDGES.map(async (bridge) => {
     try {
       const isDirect = bridge.type === "direct";
       const isTunnel = bridge.type === "tunnel";
+      const isRaw = bridge.type === "raw";
 
-      // Cache busting to force router to re-evaluate the path
-      const buster = `_uv=57_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      // Aggressive cache busting
+      const buster = `_shadow=${Date.now()}_${Math.random().toString(36).substring(5)}`;
       const urlWithBuster = targetUrl.includes("?")
         ? `${targetUrl}&${buster}`
         : `${targetUrl}?${buster}`;
 
-      const fullUrl = isDirect
+      let fullUrl = isDirect
         ? urlWithBuster
         : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
 
       const controller = new AbortController();
-      const timeout = isDirect ? 5000 : 20000;
+      // Increase timeout for slow hotspot DNS
+      const timeout = isDirect ? 5000 : 25000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-      const headers: Record<string, string> = {
+      const currentHeaders: Record<string, string> = {
         ...Object.fromEntries(Object.entries(options.headers || {})),
         Accept: "application/json",
-        "Content-Type": "application/json", // Fixed: Back to JSON to resolve 415 error
       };
 
-      const fetchOptions: RequestInit = {
+      let fetchOptions: RequestInit = {
         ...options,
-        headers,
         signal: controller.signal,
         mode: "cors",
         credentials: "omit",
       };
 
+      // v5.4 Strategy: GET-Tunneling for POSTs
+      if ((isTunnel || isRaw) && options.method === "POST") {
+        const tunnelUrl = `${bridge.proxy}${encodeURIComponent(urlWithBuster)}&payload=${encodeURIComponent(options.body as string)}`;
+        fullUrl = tunnelUrl;
+        fetchOptions = { method: "GET", signal: controller.signal };
+      } else if (isDirect && options.method === "POST") {
+        currentHeaders["Content-Type"] = "text/plain";
+        fetchOptions.headers = currentHeaders;
+      } else {
+        currentHeaders["Content-Type"] = "application/json";
+        fetchOptions.headers = currentHeaders;
+      }
+
       const response = await fetch(fullUrl, fetchOptions);
       clearTimeout(timeoutId);
 
-      // Detect Router Hijacking (HTML instead of JSON)
+      // Detection of Hotspot Interception
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("Router Hijack Detected");
+        throw new Error("Router Hijacked: Return HTML instead of Data");
       }
 
-      // Handle Tunnel Unwrapping (AllOrigins)
+      /**
+       * SHADOW UNWRAPPER:
+       * If we used the 'tunnel' bridge, the response is a JSON object with a 'contents' key.
+       * We need to "unwrap" it to get the actual Onetel API response.
+       */
       if (isTunnel) {
         const wrapper = await response.json();
         if (wrapper.contents) {
@@ -105,14 +109,10 @@ async function fetchWithResilience(
         }
       }
 
-      // If server specifically says method not allowed, this bridge is dead for this request type
-      if (response.status === 405) throw new Error("Method Not Allowed");
-      if (response.status === 415) throw new Error("Unsupported Media Type");
-
       if (response.status > 0) return response;
-      throw new Error(`Path Error (${response.status})`);
+      throw new Error(`Path Rejected (${response.status})`);
     } catch (err: any) {
-      const msg = err.name === "AbortError" ? "Path Timeout" : err.message;
+      const msg = err.name === "AbortError" ? "DNS/Path Timeout" : err.message;
       lastBridgeLogs.push({
         bridge: bridge.name,
         error: msg,
@@ -135,13 +135,11 @@ async function fetchWithResilience(
       }).catch(() => {
         failedCount++;
         if (failedCount === attempts.length && !resolved) {
-          const summary = lastBridgeLogs
-            .map((l) => `${l.bridge}: ${l.error}`)
-            .join(" | ");
+          const detailedErrors = lastBridgeLogs
+            .map((l) => `[${l.bridge}: ${l.error}]`)
+            .join(" ");
           reject(
-            new Error(
-              `All Login Paths Blocked. Check uamallowed for: corsproxy.io, api.codetabs.com. [Details: ${summary}]`,
-            ),
+            new Error(`All paths blocked by router. Logs: ${detailedErrors}`),
           );
         }
       });

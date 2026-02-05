@@ -30,8 +30,6 @@ import {
   Gauge,
   TrendingUp,
   Globe,
-  Signal,
-  Cpu,
 } from "lucide-react";
 import CryptoJS from "crypto-js";
 import Input from "./components/Input";
@@ -60,7 +58,6 @@ interface BridgeStatus {
   name: string;
   status: "checking" | "ok" | "blocked" | "intercepted";
   latency: number;
-  supportsPost: boolean;
 }
 
 const App: React.FC = () => {
@@ -86,19 +83,13 @@ const App: React.FC = () => {
   const [otpCode, setOtpCode] = useState("");
   const [authToken, setAuthToken] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [showHelper, setShowHelper] = useState(true);
   const [showLogs, setShowLogs] = useState(false);
   const [bridgeHistory, setBridgeHistory] = useState<BridgeError[]>([]);
 
   const [diagnostics, setDiagnostics] = useState<BridgeStatus[]>(
-    BRIDGES.map((b) => ({
-      name: b.name,
-      status: "checking",
-      latency: 0,
-      supportsPost: b.supportsPost,
-    })),
+    BRIDGES.map((b) => ({ name: b.name, status: "checking", latency: 0 })),
   );
 
   const [uamParams, setUamParams] = useState({
@@ -132,7 +123,6 @@ const App: React.FC = () => {
             name: bridge.name,
             status: "intercepted" as const,
             latency: Date.now() - start,
-            supportsPost: bridge.supportsPost,
           };
         }
 
@@ -140,15 +130,9 @@ const App: React.FC = () => {
           name: bridge.name,
           status: "ok" as const,
           latency: Date.now() - start,
-          supportsPost: bridge.supportsPost,
         };
       } catch (e: any) {
-        return {
-          name: bridge.name,
-          status: "blocked" as const,
-          latency: 0,
-          supportsPost: bridge.supportsPost,
-        };
+        return { name: bridge.name, status: "blocked" as const, latency: 0 };
       }
     });
 
@@ -158,7 +142,6 @@ const App: React.FC = () => {
 
   const refreshUsage = async (token: string = authToken) => {
     if (!token) return;
-    setIsRefreshing(true);
     try {
       const usageRes = await getUsage(token);
       const usage: UsageResponse = await parseResponse(usageRes);
@@ -166,21 +149,20 @@ const App: React.FC = () => {
       if (usage.checks && usage.checks.length > 0) {
         const check = usage.checks[0];
         const remainingBytes = check.value - check.result;
-        const remainingMB = (remainingBytes / (1024 * 1024)).toFixed(1);
+        const remainingMB = (remainingBytes / (1024 * 1024)).toFixed(2);
         const percent = Math.max(
           0,
           Math.min(100, (remainingBytes / check.value) * 100),
         );
-        const hasData = remainingBytes > 1024 * 5;
+        const hasData = remainingBytes > 1024 * 10;
         setUsageData({ remainingMB, percent, hasData });
         setStep("USAGE_INFO");
       } else {
         setStep("SUCCESS");
       }
     } catch (err) {
+      console.error("Usage fetch failed", err);
       setStep("SUCCESS");
-    } finally {
-      setIsRefreshing(false);
     }
   };
 
@@ -393,8 +375,7 @@ const App: React.FC = () => {
           <div className="hidden lg:flex flex-col justify-between p-12 bg-pink-500 text-white relative overflow-hidden">
             <div className="relative z-10">
               <div className="flex items-center gap-2 mb-4 bg-white/20 w-fit px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-                <Cpu className="w-3 h-3 animate-spin-slow" /> Universal Core
-                v5.7
+                <EyeOff className="w-3 h-3 animate-pulse" /> Shadow Tunnel v5.5
               </div>
               <h2 className="text-4xl font-bold leading-tight mb-6">
                 Join Onetel
@@ -403,10 +384,10 @@ const App: React.FC = () => {
             <div className="relative z-10 space-y-4">
               <div className="bg-black/10 backdrop-blur-md rounded-2xl p-4 border border-white/10">
                 <p className="text-[10px] font-black uppercase tracking-widest mb-3 text-pink-100 flex items-center justify-between">
-                  Network Map{" "}
+                  Live Diagnostics{" "}
                   <RefreshCw
                     onClick={runDiagnostics}
-                    className="w-2.5 h-2.5 cursor-pointer"
+                    className="w-2.5 h-2.5 cursor-pointer hover:rotate-180 transition-transform"
                   />
                 </p>
                 <div className="space-y-2">
@@ -565,105 +546,100 @@ const App: React.FC = () => {
     if (step === "SUCCESS" || (step === "USAGE_INFO" && usageData?.hasData)) {
       return (
         <div className="max-w-md w-full bg-white rounded-[2.5rem] shadow-2xl overflow-hidden border border-pink-100 animate-in fade-in zoom-in duration-500">
+          {/* Header Section */}
           <div className="p-8 text-center bg-pink-50 border-b border-pink-100 relative">
             <div className="absolute top-4 right-4">
               <button
                 onClick={() => refreshUsage()}
-                disabled={isRefreshing}
-                className="p-2 text-pink-400 hover:text-pink-600 transition-colors disabled:opacity-30"
+                className="p-2 text-pink-400 hover:text-pink-600 transition-colors"
               >
-                <RefreshCw
-                  className={`w-5 h-5 ${isRefreshing ? "animate-spin" : ""}`}
-                />
+                <RefreshCw className="w-5 h-5" />
               </button>
             </div>
             <div className="w-16 h-16 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg shadow-green-100">
               <CheckCircle2 className="w-10 h-10 text-white" />
             </div>
-            <h2 className="text-2xl font-black text-gray-900">Dashboard</h2>
-            <p className="text-[10px] font-black text-pink-500 uppercase tracking-widest mt-1">
-              Status: Active Tunnel v5.7
+            <h2 className="text-2xl font-black text-gray-900">Session Ready</h2>
+            <p className="text-xs font-bold text-pink-500 uppercase tracking-widest mt-1">
+              Authenticated via Shadow v5.5
             </p>
           </div>
 
+          {/* Usage Dashboard */}
           <div className="p-8 space-y-8">
             {usageData ? (
               <div className="space-y-6">
                 <div className="flex items-center justify-center relative">
-                  <svg className="w-44 h-44 transform -rotate-90">
+                  {/* Circular Gauge UI */}
+                  <svg className="w-40 h-40 transform -rotate-90">
                     <circle
-                      cx="88"
-                      cy="88"
-                      r="75"
+                      cx="80"
+                      cy="80"
+                      r="70"
                       stroke="currentColor"
                       strokeWidth="12"
                       fill="transparent"
                       className="text-pink-50"
                     />
                     <circle
-                      cx="88"
-                      cy="88"
-                      r="75"
+                      cx="80"
+                      cy="80"
+                      r="70"
                       stroke="currentColor"
                       strokeWidth="12"
                       fill="transparent"
-                      strokeDasharray={471}
-                      strokeDashoffset={471 - (471 * usageData.percent) / 100}
-                      className="text-pink-500 transition-all duration-1000 ease-out stroke-round"
+                      strokeDasharray={440}
+                      strokeDashoffset={440 - (440 * usageData.percent) / 100}
+                      className="text-pink-500 transition-all duration-1000 ease-out"
                     />
                   </svg>
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-4xl font-black text-gray-900 leading-none">
+                    <span className="text-3xl font-black text-gray-900 leading-none">
                       {usageData.remainingMB}
                     </span>
-                    <span className="text-[10px] font-black text-pink-500 uppercase tracking-widest mt-2">
-                      MB REMAINING
+                    <span className="text-[10px] font-black text-pink-500 uppercase tracking-tighter mt-1">
+                      MB LEFT
                     </span>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex flex-col items-center">
-                    <Signal className="w-4 h-4 text-pink-500 mb-2" />
-                    <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">
-                      Latency
-                    </p>
-                    <p className="text-base font-black text-gray-900">
-                      Optimized
-                    </p>
-                  </div>
-                  <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex flex-col items-center">
+                  <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
                     <TrendingUp className="w-4 h-4 text-pink-500 mb-2" />
-                    <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">
-                      Capacity
+                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
+                      Usage
                     </p>
-                    <p className="text-base font-black text-pink-600">
+                    <p className="text-lg font-black text-gray-900">
                       {usageData.percent.toFixed(0)}%
                     </p>
+                  </div>
+                  <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                    <Globe className="w-4 h-4 text-pink-500 mb-2" />
+                    <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest">
+                      Status
+                    </p>
+                    <p className="text-lg font-black text-green-500">Active</p>
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="py-12 flex flex-col items-center gap-4">
-                <Loader2 className="w-10 h-10 text-pink-200 animate-spin" />
-                <p className="text-gray-400 font-bold uppercase text-[10px] tracking-widest">
-                  Updating Balance...
-                </p>
+              <div className="py-8 text-center text-gray-400 italic text-sm">
+                Fetching data balance...
               </div>
             )}
 
             <div className="space-y-3">
               <button
                 onClick={connectToRouter}
-                className="w-full py-5 bg-pink-500 text-white font-black rounded-2xl shadow-xl active:scale-95 flex items-center justify-center gap-3 text-lg transition-all hover:shadow-pink-200"
+                className="w-full py-5 bg-pink-500 text-white font-black rounded-2xl shadow-xl active:scale-95 flex items-center justify-center gap-3 text-lg transition-transform hover:translate-y-[-2px]"
               >
                 CONNECT NOW <Zap className="w-6 h-6 fill-current" />
               </button>
               <button
                 onClick={() => setStep("BUY_DATA")}
-                className="w-full py-4 bg-white text-pink-500 border-2 border-pink-500 font-black rounded-2xl active:scale-95 text-xs uppercase tracking-widest transition-colors hover:bg-pink-50"
+                className="w-full py-4 bg-white text-pink-500 border-2 border-pink-500 font-black rounded-2xl active:scale-95 text-sm uppercase tracking-widest"
               >
-                Get More Data
+                Buy More Data
               </button>
             </div>
           </div>
@@ -677,12 +653,8 @@ const App: React.FC = () => {
           <div className="mb-6 flex justify-center text-orange-500">
             <Database className="w-16 h-16" />
           </div>
-          <h2 className="text-3xl font-black text-gray-900 mb-2">
-            Out of Data
-          </h2>
-          <p className="text-gray-500 mb-8">
-            Please top up to continue browsing.
-          </p>
+          <h2 className="text-3xl font-black text-gray-900 mb-2">No Data</h2>
+          <p className="text-gray-500 mb-8">You need a bundle to connect.</p>
           <button
             onClick={() => setStep("BUY_DATA")}
             className="w-full py-5 bg-orange-500 text-white font-black rounded-2xl shadow-xl flex items-center justify-center gap-2 active:scale-95 text-lg"
@@ -698,8 +670,8 @@ const App: React.FC = () => {
         <div className="hidden lg:flex flex-col justify-between p-12 bg-pink-500 text-white relative overflow-hidden">
           <div className="relative z-10">
             <div className="flex items-center gap-2 mb-4 bg-white/20 w-fit px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-              <Network className="w-3 h-3 animate-pulse" /> Universal Protocol
-              v5.7
+              <Radio className="w-3 h-3 animate-pulse" /> Resilience Core v5.5
+              (Active)
             </div>
             <h2 className="text-4xl font-bold leading-tight mb-6">
               Fast WiFi
@@ -712,7 +684,7 @@ const App: React.FC = () => {
             <div className="bg-black/10 backdrop-blur-md rounded-2xl p-5 border border-white/10 shadow-inner">
               <div className="flex items-center justify-between mb-4">
                 <p className="text-[10px] font-black uppercase tracking-widest text-pink-100 flex items-center gap-2">
-                  <Activity className="w-3 h-3" /> System Bridges
+                  <Activity className="w-3 h-3" /> System Diagnostics
                 </p>
                 {bridgeHistory.length > 0 && (
                   <button
@@ -755,12 +727,7 @@ const App: React.FC = () => {
                         <div
                           className={`w-2.5 h-2.5 rounded-full ${d.status === "ok" ? "bg-green-400" : d.status === "intercepted" ? "bg-orange-400 animate-pulse" : "bg-red-400"}`}
                         />
-                        {d.name}{" "}
-                        {d.supportsPost ? (
-                          <span className="text-[7px] bg-white/10 px-1 rounded">
-                            AUTH+
-                          </span>
-                        ) : null}
+                        {d.name}
                       </span>
                       <div className="flex items-center gap-2">
                         <span
@@ -769,8 +736,8 @@ const App: React.FC = () => {
                           {d.status === "ok"
                             ? `${d.latency}ms`
                             : d.status === "intercepted"
-                              ? "TRAPPED"
-                              : "OFFLINE"}
+                              ? "INTERCEPTED"
+                              : "BLOCKED"}
                         </span>
                       </div>
                     </div>
@@ -810,23 +777,22 @@ const App: React.FC = () => {
                 <XCircle className="w-5 h-5 mt-0.5 shrink-0" />
                 <div className="flex-1">
                   <span className="leading-relaxed">{errorMessage}</span>
-                  {(errorMessage.includes("Blocked") ||
-                    errorMessage.includes("failed") ||
-                    errorMessage.includes("CORS")) && (
+                  {(errorMessage.includes("blocked") ||
+                    errorMessage.includes("failed")) && (
                     <div className="mt-2 p-3 bg-red-100 rounded-lg text-red-700 space-y-2 border border-red-200 shadow-sm">
                       <div className="flex items-center gap-2 font-black uppercase text-[8px]">
-                        <ZapOff className="w-3 h-3" /> Path Resolution Error
+                        <ZapOff className="w-3 h-3" /> Connection Error
                       </div>
                       <p className="text-[9px] leading-tight font-medium">
-                        Your router is strictly blocking proxies. Ensure{" "}
-                        <b>corsproxy.io</b> is added to your <b>uamallowed</b>{" "}
+                        The router is hijacking the login request. Ensure{" "}
+                        <b>api.allorigins.win</b> is in your <b>uamallowed</b>{" "}
                         list.
                       </p>
                       <button
                         onClick={() => window.location.reload()}
                         className="text-[8px] font-black uppercase tracking-widest underline decoration-2"
                       >
-                        Rescue Refresh
+                        Emergency Refresh
                       </button>
                     </div>
                   )}
@@ -850,7 +816,7 @@ const App: React.FC = () => {
             onClick={() => setStep("REGISTRATION")}
             className="w-full mt-6 text-pink-500 font-bold text-xs uppercase tracking-widest hover:underline"
           >
-            New Member Registration
+            New Account?
           </button>
         </div>
       </div>
@@ -871,7 +837,7 @@ const App: React.FC = () => {
         <div className="mt-8 max-w-xl w-full bg-white border-2 border-pink-100 rounded-[2rem] p-6 shadow-xl animate-in slide-in-from-bottom-8">
           <div className="flex items-center justify-between mb-4">
             <h4 className="text-[10px] font-black text-gray-800 uppercase tracking-widest flex items-center gap-2">
-              <ServerCrash className="w-4 h-4 text-pink-500" /> Walled Garden
+              <ServerCrash className="w-4 h-4 text-pink-500" /> Portal Rescue
               Kit
             </h4>
             <button
@@ -883,7 +849,7 @@ const App: React.FC = () => {
           </div>
           <div className="space-y-3">
             <p className="text-[10px] text-gray-500 font-medium leading-relaxed">
-              Copy these to your <b>uamallowed</b> config (essential for v5.7):
+              Ensure these domains are allowed in your <b>uamallowed</b> list:
             </p>
             <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 flex gap-2 items-center">
               <code className="text-[9px] font-mono text-gray-500 truncate flex-1 leading-none">
@@ -902,7 +868,7 @@ const App: React.FC = () => {
 
       <p className="mt-8 text-center text-gray-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
         <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
-        Onetel Network • Universal v5.7 (DPI Bypass Engaged)
+        Onetel Network • Hyper-Path v5.5 (Dashboard Active)
       </p>
     </div>
   );
