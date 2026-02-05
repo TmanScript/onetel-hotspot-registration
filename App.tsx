@@ -31,6 +31,7 @@ import {
   TrendingUp,
   Globe,
   Signal,
+  Cpu,
 } from "lucide-react";
 import CryptoJS from "crypto-js";
 import Input from "./components/Input";
@@ -59,6 +60,7 @@ interface BridgeStatus {
   name: string;
   status: "checking" | "ok" | "blocked" | "intercepted";
   latency: number;
+  supportsPost: boolean;
 }
 
 const App: React.FC = () => {
@@ -91,7 +93,12 @@ const App: React.FC = () => {
   const [bridgeHistory, setBridgeHistory] = useState<BridgeError[]>([]);
 
   const [diagnostics, setDiagnostics] = useState<BridgeStatus[]>(
-    BRIDGES.map((b) => ({ name: b.name, status: "checking", latency: 0 })),
+    BRIDGES.map((b) => ({
+      name: b.name,
+      status: "checking",
+      latency: 0,
+      supportsPost: b.supportsPost,
+    })),
   );
 
   const [uamParams, setUamParams] = useState({
@@ -110,7 +117,7 @@ const App: React.FC = () => {
           : target;
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4500);
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
 
         const res = await fetch(url, {
           signal: controller.signal,
@@ -125,6 +132,7 @@ const App: React.FC = () => {
             name: bridge.name,
             status: "intercepted" as const,
             latency: Date.now() - start,
+            supportsPost: bridge.supportsPost,
           };
         }
 
@@ -132,9 +140,15 @@ const App: React.FC = () => {
           name: bridge.name,
           status: "ok" as const,
           latency: Date.now() - start,
+          supportsPost: bridge.supportsPost,
         };
       } catch (e: any) {
-        return { name: bridge.name, status: "blocked" as const, latency: 0 };
+        return {
+          name: bridge.name,
+          status: "blocked" as const,
+          latency: 0,
+          supportsPost: bridge.supportsPost,
+        };
       }
     });
 
@@ -379,8 +393,8 @@ const App: React.FC = () => {
           <div className="hidden lg:flex flex-col justify-between p-12 bg-pink-500 text-white relative overflow-hidden">
             <div className="relative z-10">
               <div className="flex items-center gap-2 mb-4 bg-white/20 w-fit px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-                <ShieldCheck className="w-3 h-3 animate-pulse" /> Adaptive Path
-                v5.6
+                <Cpu className="w-3 h-3 animate-spin-slow" /> Universal Core
+                v5.7
               </div>
               <h2 className="text-4xl font-bold leading-tight mb-6">
                 Join Onetel
@@ -389,7 +403,7 @@ const App: React.FC = () => {
             <div className="relative z-10 space-y-4">
               <div className="bg-black/10 backdrop-blur-md rounded-2xl p-4 border border-white/10">
                 <p className="text-[10px] font-black uppercase tracking-widest mb-3 text-pink-100 flex items-center justify-between">
-                  Live Diagnostics{" "}
+                  Network Map{" "}
                   <RefreshCw
                     onClick={runDiagnostics}
                     className="w-2.5 h-2.5 cursor-pointer"
@@ -551,7 +565,6 @@ const App: React.FC = () => {
     if (step === "SUCCESS" || (step === "USAGE_INFO" && usageData?.hasData)) {
       return (
         <div className="max-w-md w-full bg-white rounded-[2.5rem] shadow-2xl overflow-hidden border border-pink-100 animate-in fade-in zoom-in duration-500">
-          {/* Header Section */}
           <div className="p-8 text-center bg-pink-50 border-b border-pink-100 relative">
             <div className="absolute top-4 right-4">
               <button
@@ -569,11 +582,10 @@ const App: React.FC = () => {
             </div>
             <h2 className="text-2xl font-black text-gray-900">Dashboard</h2>
             <p className="text-[10px] font-black text-pink-500 uppercase tracking-widest mt-1">
-              Status: Session Optimized
+              Status: Active Tunnel v5.7
             </p>
           </div>
 
-          {/* Usage Dashboard */}
           <div className="p-8 space-y-8">
             {usageData ? (
               <div className="space-y-6">
@@ -614,14 +626,16 @@ const App: React.FC = () => {
                   <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex flex-col items-center">
                     <Signal className="w-4 h-4 text-pink-500 mb-2" />
                     <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">
-                      Stability
+                      Latency
                     </p>
-                    <p className="text-base font-black text-gray-900">High</p>
+                    <p className="text-base font-black text-gray-900">
+                      Optimized
+                    </p>
                   </div>
                   <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex flex-col items-center">
                     <TrendingUp className="w-4 h-4 text-pink-500 mb-2" />
                     <p className="text-[8px] font-black text-gray-400 uppercase tracking-widest mb-1">
-                      Percentage
+                      Capacity
                     </p>
                     <p className="text-base font-black text-pink-600">
                       {usageData.percent.toFixed(0)}%
@@ -667,7 +681,7 @@ const App: React.FC = () => {
             Out of Data
           </h2>
           <p className="text-gray-500 mb-8">
-            You need a bundle to start browsing.
+            Please top up to continue browsing.
           </p>
           <button
             onClick={() => setStep("BUY_DATA")}
@@ -684,8 +698,8 @@ const App: React.FC = () => {
         <div className="hidden lg:flex flex-col justify-between p-12 bg-pink-500 text-white relative overflow-hidden">
           <div className="relative z-10">
             <div className="flex items-center gap-2 mb-4 bg-white/20 w-fit px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-              <Network className="w-3 h-3 animate-pulse" /> Adaptive Protocol
-              v5.6
+              <Network className="w-3 h-3 animate-pulse" /> Universal Protocol
+              v5.7
             </div>
             <h2 className="text-4xl font-bold leading-tight mb-6">
               Fast WiFi
@@ -698,7 +712,7 @@ const App: React.FC = () => {
             <div className="bg-black/10 backdrop-blur-md rounded-2xl p-5 border border-white/10 shadow-inner">
               <div className="flex items-center justify-between mb-4">
                 <p className="text-[10px] font-black uppercase tracking-widest text-pink-100 flex items-center gap-2">
-                  <Activity className="w-3 h-3" /> Adaptive Routing
+                  <Activity className="w-3 h-3" /> System Bridges
                 </p>
                 {bridgeHistory.length > 0 && (
                   <button
@@ -741,7 +755,12 @@ const App: React.FC = () => {
                         <div
                           className={`w-2.5 h-2.5 rounded-full ${d.status === "ok" ? "bg-green-400" : d.status === "intercepted" ? "bg-orange-400 animate-pulse" : "bg-red-400"}`}
                         />
-                        {d.name}
+                        {d.name}{" "}
+                        {d.supportsPost ? (
+                          <span className="text-[7px] bg-white/10 px-1 rounded">
+                            AUTH+
+                          </span>
+                        ) : null}
                       </span>
                       <div className="flex items-center gap-2">
                         <span
@@ -751,7 +770,7 @@ const App: React.FC = () => {
                             ? `${d.latency}ms`
                             : d.status === "intercepted"
                               ? "TRAPPED"
-                              : "BLOCKED"}
+                              : "OFFLINE"}
                         </span>
                       </div>
                     </div>
@@ -792,13 +811,14 @@ const App: React.FC = () => {
                 <div className="flex-1">
                   <span className="leading-relaxed">{errorMessage}</span>
                   {(errorMessage.includes("Blocked") ||
-                    errorMessage.includes("failed")) && (
+                    errorMessage.includes("failed") ||
+                    errorMessage.includes("CORS")) && (
                     <div className="mt-2 p-3 bg-red-100 rounded-lg text-red-700 space-y-2 border border-red-200 shadow-sm">
                       <div className="flex items-center gap-2 font-black uppercase text-[8px]">
-                        <ZapOff className="w-3 h-3" /> Protocol Warning
+                        <ZapOff className="w-3 h-3" /> Path Resolution Error
                       </div>
                       <p className="text-[9px] leading-tight font-medium">
-                        The router is hijacking encrypted paths. Ensure{" "}
+                        Your router is strictly blocking proxies. Ensure{" "}
                         <b>corsproxy.io</b> is added to your <b>uamallowed</b>{" "}
                         list.
                       </p>
@@ -806,7 +826,7 @@ const App: React.FC = () => {
                         onClick={() => window.location.reload()}
                         className="text-[8px] font-black uppercase tracking-widest underline decoration-2"
                       >
-                        Emergency Refresh
+                        Rescue Refresh
                       </button>
                     </div>
                   )}
@@ -830,7 +850,7 @@ const App: React.FC = () => {
             onClick={() => setStep("REGISTRATION")}
             className="w-full mt-6 text-pink-500 font-bold text-xs uppercase tracking-widest hover:underline"
           >
-            Create New Account
+            New Member Registration
           </button>
         </div>
       </div>
@@ -863,7 +883,7 @@ const App: React.FC = () => {
           </div>
           <div className="space-y-3">
             <p className="text-[10px] text-gray-500 font-medium leading-relaxed">
-              Ensure these domains are allowed in your <b>uamallowed</b> list:
+              Copy these to your <b>uamallowed</b> config (essential for v5.7):
             </p>
             <div className="bg-gray-50 p-3 rounded-xl border border-gray-100 flex gap-2 items-center">
               <code className="text-[9px] font-mono text-gray-500 truncate flex-1 leading-none">
@@ -882,7 +902,7 @@ const App: React.FC = () => {
 
       <p className="mt-8 text-center text-gray-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
         <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
-        Onetel Network • Adaptive v5.6 (Optimization Active)
+        Onetel Network • Universal v5.7 (DPI Bypass Engaged)
       </p>
     </div>
   );

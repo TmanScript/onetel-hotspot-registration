@@ -1,22 +1,32 @@
 import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
-export const BRIDGES = [
-  { name: "Direct Path", proxy: "", type: "direct" },
+export interface Bridge {
+  name: string;
+  proxy: string;
+  type: "direct" | "standard" | "tunnel";
+  supportsPost: boolean;
+}
+
+export const BRIDGES: Bridge[] = [
+  { name: "Direct Path", proxy: "", type: "direct", supportsPost: true },
   {
-    name: "Stealth Bridge A",
+    name: "Bridge Alpha",
     proxy: "https://corsproxy.io/?",
     type: "standard",
+    supportsPost: true,
   },
   {
-    name: "Stealth Bridge B",
+    name: "Bridge Beta",
     proxy: "https://api.codetabs.com/v1/proxy/?quest=",
     type: "standard",
+    supportsPost: true,
   },
   {
-    name: "Rescue Tunnel",
+    name: "Data Tunnel",
     proxy: "https://api.allorigins.win/get?url=",
     type: "tunnel",
+    supportsPost: false,
   },
 ];
 
@@ -29,77 +39,62 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * FETCH WITH ADAPTIVE RESILIENCE v5.6
- * Smart method switching to prevent "Method Not Allowed" errors.
+ * FETCH WITH UNIVERSAL RESILIENCE v5.7
+ * Intelligent bridge filtering based on HTTP Method capability.
  */
 async function fetchWithResilience(
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
   lastBridgeLogs = [];
+  const isPost = options.method === "POST";
 
-  const attempts = BRIDGES.map(async (bridge) => {
+  // Filter bridges: If we are doing a POST (Login), remove bridges that don't support it.
+  const compatibleBridges = BRIDGES.filter((b) => !isPost || b.supportsPost);
+
+  const attempts = compatibleBridges.map(async (bridge) => {
     try {
       const isDirect = bridge.type === "direct";
       const isTunnel = bridge.type === "tunnel";
-      const isPost = options.method === "POST";
 
-      // High-entropy cache busting
-      const buster = `_v=56_${Date.now()}_${Math.random().toString(36).substring(6)}`;
+      // Cache busting to force router to re-evaluate the path
+      const buster = `_uv=57_${Date.now()}_${Math.random().toString(36).substring(7)}`;
       const urlWithBuster = targetUrl.includes("?")
         ? `${targetUrl}&${buster}`
         : `${targetUrl}?${buster}`;
 
-      let fullUrl = isDirect
+      const fullUrl = isDirect
         ? urlWithBuster
         : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
 
       const controller = new AbortController();
-      const timeout = isDirect ? 6000 : 22000;
+      const timeout = isDirect ? 5000 : 20000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       const headers: Record<string, string> = {
         ...Object.fromEntries(Object.entries(options.headers || {})),
         Accept: "application/json",
+        "Content-Type": "application/json", // Fixed: Back to JSON to resolve 415 error
       };
 
-      let fetchOptions: RequestInit = {
+      const fetchOptions: RequestInit = {
         ...options,
+        headers,
         signal: controller.signal,
         mode: "cors",
         credentials: "omit",
       };
 
-      /**
-       * v5.6 ADAPTIVE STRATEGY:
-       * 1. Never use GET-tunneling for POST requests to endpoints that strictly
-       *    require POST (like login/token).
-       * 2. Use 'text/plain' for POSTs on standard bridges to bypass router DPI.
-       */
-      if (isTunnel) {
-        if (isPost) {
-          // AllOrigins doesn't support POST well. We skip it for logins.
-          throw new Error("Bridge incompatible with POST");
-        }
-        // For GET (Usage), use the tunnel.
-        fullUrl = `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
-        fetchOptions = { method: "GET", signal: controller.signal };
-      } else if (isPost) {
-        // Use text/plain to bypass router inspection while staying as a POST
-        headers["Content-Type"] = "text/plain";
-        fetchOptions.headers = headers;
-      }
-
       const response = await fetch(fullUrl, fetchOptions);
       clearTimeout(timeoutId);
 
-      // Check for Router Hijacking
+      // Detect Router Hijacking (HTML instead of JSON)
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("Router Hijacked Connection");
+        throw new Error("Router Hijack Detected");
       }
 
-      // Handle Tunnel Unwrapping
+      // Handle Tunnel Unwrapping (AllOrigins)
       if (isTunnel) {
         const wrapper = await response.json();
         if (wrapper.contents) {
@@ -110,14 +105,14 @@ async function fetchWithResilience(
         }
       }
 
-      if (response.status === 405) {
-        throw new Error("Method Not Allowed (Bridge Mismatch)");
-      }
+      // If server specifically says method not allowed, this bridge is dead for this request type
+      if (response.status === 405) throw new Error("Method Not Allowed");
+      if (response.status === 415) throw new Error("Unsupported Media Type");
 
       if (response.status > 0) return response;
-      throw new Error(`Path Rejected (${response.status})`);
+      throw new Error(`Path Error (${response.status})`);
     } catch (err: any) {
-      const msg = err.name === "AbortError" ? "DNS Timeout" : err.message;
+      const msg = err.name === "AbortError" ? "Path Timeout" : err.message;
       lastBridgeLogs.push({
         bridge: bridge.name,
         error: msg,
@@ -140,10 +135,12 @@ async function fetchWithResilience(
       }).catch(() => {
         failedCount++;
         if (failedCount === attempts.length && !resolved) {
-          const errors = lastBridgeLogs.map((l) => l.error).join(" | ");
+          const summary = lastBridgeLogs
+            .map((l) => `${l.bridge}: ${l.error}`)
+            .join(" | ");
           reject(
             new Error(
-              `Login Path Blocked. Common cause: Router uamallowed list is missing api.allorigins.win or corsproxy.io. [Trace: ${errors}]`,
+              `All Login Paths Blocked. Check uamallowed for: corsproxy.io, api.codetabs.com. [Details: ${summary}]`,
             ),
           );
         }
