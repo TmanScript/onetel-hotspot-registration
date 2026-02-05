@@ -4,12 +4,23 @@ import { API_ENDPOINT } from "../constants";
 export interface Bridge {
   name: string;
   proxy: string;
-  type: "direct" | "standard" | "tunnel" | "raw";
+  type: "local" | "direct" | "standard" | "tunnel";
   supportsPost: boolean;
 }
 
+/**
+ * v6.1: Aligned with OpenWISP Umoja Template
+ * Primary Bridge: wifi-auth.umoja.network (Local Alias)
+ */
 export const BRIDGES: Bridge[] = [
-  { name: "Direct Cloud", proxy: "", type: "direct", supportsPost: true },
+  {
+    name: "Umoja Local",
+    proxy:
+      "https://wifi-auth.umoja.network/api/v1/radius/organization/umoja/account/",
+    type: "local",
+    supportsPost: true,
+  },
+  { name: "Direct Path", proxy: "", type: "direct", supportsPost: true },
   {
     name: "Bridge Alpha",
     proxy: "https://corsproxy.io/?",
@@ -28,12 +39,6 @@ export const BRIDGES: Bridge[] = [
     type: "standard",
     supportsPost: true,
   },
-  {
-    name: "Data Tunnel",
-    proxy: "https://api.allorigins.win/raw?url=",
-    type: "raw",
-    supportsPost: true,
-  },
 ];
 
 export interface BridgeError {
@@ -43,10 +48,10 @@ export interface BridgeError {
 }
 
 export let lastBridgeLogs: BridgeError[] = [];
+let successfulBridgeName: string | null = null;
 
 /**
- * FETCH WITH ENGINE X RESILIENCE v5.8
- * Aggressive multi-path race with header optimization to bypass router OPTIONS blocking.
+ * FETCH WITH UMOJA LOCAL-FIRST v6.1
  */
 async function fetchWithResilience(
   targetUrl: string,
@@ -55,78 +60,92 @@ async function fetchWithResilience(
   lastBridgeLogs = [];
   const isPost = options.method === "POST";
 
-  // Filter compatible bridges
-  const compatibleBridges = BRIDGES.filter((b) => !isPost || b.supportsPost);
+  // Sort bridges: Priority to successful path, then Local Umoja bridge
+  const sortedBridges = [...BRIDGES].sort((a, b) => {
+    if (a.name === successfulBridgeName) return -1;
+    if (b.name === successfulBridgeName) return 1;
+    if (a.type === "local") return -1;
+    return 0;
+  });
+
+  const compatibleBridges = sortedBridges.filter(
+    (b) => !isPost || b.supportsPost,
+  );
 
   const attempts = compatibleBridges.map(async (bridge) => {
     try {
       const isDirect = bridge.type === "direct";
+      const isLocal = bridge.type === "local";
 
-      // Dynamic Cache Busting to force router re-evaluation
-      const buster = `_ex8=${Date.now()}_${Math.random().toString(36).substring(8)}`;
-      const urlWithBuster = targetUrl.includes("?")
-        ? `${targetUrl}&${buster}`
-        : `${targetUrl}?${buster}`;
-
-      const fullUrl = isDirect
-        ? urlWithBuster
-        : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
+      let fullUrl: string;
+      if (isLocal) {
+        // Map direct Onetel endpoint to Umoja Proxy endpoint
+        const pathSuffix = targetUrl.split("/account/")[1] || "";
+        fullUrl = `${bridge.proxy}${pathSuffix}`;
+      } else {
+        const buster = `_umoja=${Date.now()}`;
+        const urlWithBuster = targetUrl.includes("?")
+          ? `${targetUrl}&${buster}`
+          : `${targetUrl}?${buster}`;
+        fullUrl = isDirect
+          ? urlWithBuster
+          : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
+      }
 
       const controller = new AbortController();
-      const timeout = isDirect ? 4000 : 20000;
+      const timeout = isDirect || isLocal ? 4000 : 18000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       const headers: Record<string, string> = {
-        ...Object.fromEntries(Object.entries(options.headers || {})),
         Accept: "application/json",
       };
 
-      // v5.8 Optimization: Only add JSON content-type if there is a body.
-      // Hotspots often block 'application/json' in pre-flights.
-      if (options.body) {
-        headers["Content-Type"] = "application/json";
+      if (options.headers) {
+        Object.entries(options.headers).forEach(
+          ([k, v]) => (headers[k] = v as string),
+        );
       }
 
-      const fetchOptions: RequestInit = {
+      // v6.1 Strategy: Use 'text/plain' for POSTs on external bridges to skip OPTIONS check
+      if (options.body) {
+        headers["Content-Type"] =
+          isDirect || isLocal ? "application/json" : "text/plain";
+      }
+
+      const response = await fetch(fullUrl, {
         ...options,
         headers,
         signal: controller.signal,
         mode: "cors",
         credentials: "omit",
-      };
+      });
 
-      const response = await fetch(fullUrl, fetchOptions);
       clearTimeout(timeoutId);
 
-      // Check for Router Interception (Captive Portal Redirects)
-      const contentType = response.headers.get("content-type") || "";
-      if (contentType.includes("text/html") && response.status === 200) {
-        const text = await response.clone().text();
-        if (
-          text.toLowerCase().includes("chilli") ||
-          text.toLowerCase().includes("login") ||
-          text.toLowerCase().includes("uam")
-        ) {
-          throw new Error("Router Intercepted Bridge");
+      // Detect Chilli Redirects
+      if (response.status === 200) {
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("text/html")) {
+          const text = await response.clone().text();
+          if (
+            text.toLowerCase().includes("chilli") ||
+            text.toLowerCase().includes("uam")
+          ) {
+            throw new Error("Local Network Hijack");
+          }
         }
       }
 
-      // Handle common proxy errors
-      if (response.status === 403) throw new Error("Bridge Forbidden (403)");
-      if (response.status === 405) throw new Error("Method Not Allowed (405)");
-      if (response.status === 429) throw new Error("Bridge Rate Limited (429)");
-
-      // If we got a response from the Onetel server (even a 400/401), the path is clear
       if (response.ok || (response.status >= 400 && response.status < 500)) {
+        successfulBridgeName = bridge.name;
         return response;
       }
 
-      throw new Error(`Path Error (${response.status})`);
+      throw new Error(`Path Rejected (${response.status})`);
     } catch (err: any) {
-      const msg = err.name === "AbortError" ? "Path Timeout" : err.message;
       lastBridgeLogs.push({
         bridge: bridge.name,
-        error: msg,
+        error: err.message,
         timestamp: new Date().toLocaleTimeString(),
       });
       throw err;
@@ -151,7 +170,7 @@ async function fetchWithResilience(
             .join(" | ");
           reject(
             new Error(
-              `Security Alert: The hotspot is blocking the secure authentication tunnel. Ensure 'thingproxy.freeboard.io' is added to your uamallowed list. [Trace: ${summary}]`,
+              `Umoja Path Error: The router firewall is blocking the auth tunnel. [Trace: ${summary}]`,
             ),
           );
         }
