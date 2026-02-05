@@ -1,43 +1,23 @@
 import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
-export interface Bridge {
-  name: string;
-  proxy: string;
-  type: "local" | "direct" | "standard" | "tunnel";
-  supportsPost: boolean;
-}
-
-/**
- * v6.1: Aligned with OpenWISP Umoja Template
- * Primary Bridge: wifi-auth.umoja.network (Local Alias)
- */
-export const BRIDGES: Bridge[] = [
+export const BRIDGES = [
+  { name: "Direct Cloud", proxy: "", type: "direct" },
   {
-    name: "Umoja Local",
-    proxy:
-      "https://wifi-auth.umoja.network/api/v1/radius/organization/umoja/account/",
-    type: "local",
-    supportsPost: true,
-  },
-  { name: "Direct Path", proxy: "", type: "direct", supportsPost: true },
-  {
-    name: "Bridge Alpha",
-    proxy: "https://corsproxy.io/?",
-    type: "standard",
-    supportsPost: true,
+    name: "Rescue Shadow (Raw)",
+    proxy: "https://api.allorigins.win/raw?url=",
+    type: "raw",
   },
   {
-    name: "Bridge Gamma",
-    proxy: "https://thingproxy.freeboard.io/fetch/",
-    type: "standard",
-    supportsPost: true,
+    name: "Tunnel Shadow (Get)",
+    proxy: "https://api.allorigins.win/get?url=",
+    type: "tunnel",
   },
+  { name: "Mirror Path A", proxy: "https://corsproxy.io/?", type: "standard" },
   {
-    name: "Bridge Delta",
+    name: "Mirror Path B",
     proxy: "https://api.codetabs.com/v1/proxy/?quest=",
     type: "standard",
-    supportsPost: true,
   },
 ];
 
@@ -48,104 +28,94 @@ export interface BridgeError {
 }
 
 export let lastBridgeLogs: BridgeError[] = [];
-let successfulBridgeName: string | null = null;
 
 /**
- * FETCH WITH UMOJA LOCAL-FIRST v6.1
+ * FETCH WITH SHADOW RESILIENCE v5.4
+ * Sophisticated unwrapping and multi-path execution.
  */
 async function fetchWithResilience(
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
   lastBridgeLogs = [];
-  const isPost = options.method === "POST";
 
-  // Sort bridges: Priority to successful path, then Local Umoja bridge
-  const sortedBridges = [...BRIDGES].sort((a, b) => {
-    if (a.name === successfulBridgeName) return -1;
-    if (b.name === successfulBridgeName) return 1;
-    if (a.type === "local") return -1;
-    return 0;
-  });
-
-  const compatibleBridges = sortedBridges.filter(
-    (b) => !isPost || b.supportsPost,
-  );
-
-  const attempts = compatibleBridges.map(async (bridge) => {
+  const attempts = BRIDGES.map(async (bridge) => {
     try {
       const isDirect = bridge.type === "direct";
-      const isLocal = bridge.type === "local";
+      const isTunnel = bridge.type === "tunnel";
+      const isRaw = bridge.type === "raw";
 
-      let fullUrl: string;
-      if (isLocal) {
-        // Map direct Onetel endpoint to Umoja Proxy endpoint
-        const pathSuffix = targetUrl.split("/account/")[1] || "";
-        fullUrl = `${bridge.proxy}${pathSuffix}`;
-      } else {
-        const buster = `_umoja=${Date.now()}`;
-        const urlWithBuster = targetUrl.includes("?")
-          ? `${targetUrl}&${buster}`
-          : `${targetUrl}?${buster}`;
-        fullUrl = isDirect
-          ? urlWithBuster
-          : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
-      }
+      // Aggressive cache busting
+      const buster = `_shadow=${Date.now()}_${Math.random().toString(36).substring(5)}`;
+      const urlWithBuster = targetUrl.includes("?")
+        ? `${targetUrl}&${buster}`
+        : `${targetUrl}?${buster}`;
+
+      let fullUrl = isDirect
+        ? urlWithBuster
+        : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
 
       const controller = new AbortController();
-      const timeout = isDirect || isLocal ? 4000 : 18000;
+      // Increase timeout for slow hotspot DNS
+      const timeout = isDirect ? 5000 : 25000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-      const headers: Record<string, string> = {
+      const currentHeaders: Record<string, string> = {
+        ...Object.fromEntries(Object.entries(options.headers || {})),
         Accept: "application/json",
       };
 
-      if (options.headers) {
-        Object.entries(options.headers).forEach(
-          ([k, v]) => (headers[k] = v as string),
-        );
-      }
-
-      // v6.1 Strategy: Use 'text/plain' for POSTs on external bridges to skip OPTIONS check
-      if (options.body) {
-        headers["Content-Type"] =
-          isDirect || isLocal ? "application/json" : "text/plain";
-      }
-
-      const response = await fetch(fullUrl, {
+      let fetchOptions: RequestInit = {
         ...options,
-        headers,
         signal: controller.signal,
         mode: "cors",
         credentials: "omit",
-      });
+      };
 
+      // v5.4 Strategy: GET-Tunneling for POSTs
+      if ((isTunnel || isRaw) && options.method === "POST") {
+        const tunnelUrl = `${bridge.proxy}${encodeURIComponent(urlWithBuster)}&payload=${encodeURIComponent(options.body as string)}`;
+        fullUrl = tunnelUrl;
+        fetchOptions = { method: "GET", signal: controller.signal };
+      } else if (isDirect && options.method === "POST") {
+        currentHeaders["Content-Type"] = "text/plain";
+        fetchOptions.headers = currentHeaders;
+      } else {
+        currentHeaders["Content-Type"] = "application/json";
+        fetchOptions.headers = currentHeaders;
+      }
+
+      const response = await fetch(fullUrl, fetchOptions);
       clearTimeout(timeoutId);
 
-      // Detect Chilli Redirects
-      if (response.status === 200) {
-        const contentType = response.headers.get("content-type") || "";
-        if (contentType.includes("text/html")) {
-          const text = await response.clone().text();
-          if (
-            text.toLowerCase().includes("chilli") ||
-            text.toLowerCase().includes("uam")
-          ) {
-            throw new Error("Local Network Hijack");
-          }
+      // Detection of Hotspot Interception
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("text/html") && response.status === 200) {
+        throw new Error("Router Hijacked: Return HTML instead of Data");
+      }
+
+      /**
+       * SHADOW UNWRAPPER:
+       * If we used the 'tunnel' bridge, the response is a JSON object with a 'contents' key.
+       * We need to "unwrap" it to get the actual Onetel API response.
+       */
+      if (isTunnel) {
+        const wrapper = await response.json();
+        if (wrapper.contents) {
+          return new Response(wrapper.contents, {
+            status: wrapper.status?.http_code || 200,
+            headers: { "Content-Type": "application/json" },
+          });
         }
       }
 
-      if (response.ok || (response.status >= 400 && response.status < 500)) {
-        successfulBridgeName = bridge.name;
-        return response;
-      }
-
+      if (response.status > 0) return response;
       throw new Error(`Path Rejected (${response.status})`);
     } catch (err: any) {
+      const msg = err.name === "AbortError" ? "DNS/Path Timeout" : err.message;
       lastBridgeLogs.push({
         bridge: bridge.name,
-        error: err.message,
+        error: msg,
         timestamp: new Date().toLocaleTimeString(),
       });
       throw err;
@@ -165,13 +135,11 @@ async function fetchWithResilience(
       }).catch(() => {
         failedCount++;
         if (failedCount === attempts.length && !resolved) {
-          const summary = lastBridgeLogs
-            .map((l) => `${l.bridge}: ${l.error}`)
-            .join(" | ");
+          const detailedErrors = lastBridgeLogs
+            .map((l) => `[${l.bridge}: ${l.error}]`)
+            .join(" ");
           reject(
-            new Error(
-              `Umoja Path Error: The router firewall is blocking the auth tunnel. [Trace: ${summary}]`,
-            ),
+            new Error(`All paths blocked by router. Logs: ${detailedErrors}`),
           );
         }
       });
