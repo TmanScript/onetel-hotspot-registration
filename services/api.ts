@@ -2,9 +2,9 @@ import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
 /**
- * BRIDGES CONFIGURATION
- * We use 'tunnel' for AllOrigins because it wraps the response to bypass CORS entirely.
- * We use 'standard' for others that just act as a relay.
+ * BRIDGE CONFIGURATION
+ * AllOrigins is the primary "Shadow" because it allows us to turn POSTs into GETs
+ * to bypass the CORS Preflight (OPTIONS) block shown in your console logs.
  */
 export const BRIDGES = [
   { name: "Direct Cloud", proxy: "", type: "direct" },
@@ -29,29 +29,8 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * SHADOW UNWRAPPER
- * AllOrigins wraps the API response in a JSON object. This extracts the real data.
- */
-async function unwrapResponse(
-  response: Response,
-  type: string,
-): Promise<Response> {
-  if (type === "tunnel") {
-    const json = await response.json();
-    if (json.contents) {
-      // Reconstruct a standard Response object from the tunneled contents
-      return new Response(json.contents, {
-        status: json.status?.http_code || 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-  }
-  return response;
-}
-
-/**
- * FETCH WITH SHADOW RESILIENCE v7.0
- * Bypasses CORS Preflight and handles Captive Portal Hijacking.
+ * FETCH WITH SHADOW RESILIENCE v8.0
+ * Redesigned to stop CORS Preflight (OPTIONS) blocks and handle Router Hijacking.
  */
 async function fetchWithResilience(
   targetUrl: string,
@@ -59,13 +38,13 @@ async function fetchWithResilience(
 ): Promise<Response> {
   lastBridgeLogs = [];
 
-  // Track failures to try next bridge
-  const attempts = BRIDGES.map(async (bridge) => {
+  // We try bridges one by one (Serial execution) to prevent browser-side network congestion
+  for (const bridge of BRIDGES) {
     try {
       const isDirect = bridge.type === "direct";
       const isTunnel = bridge.type === "tunnel";
 
-      // Aggressive cache busting to prevent router from serving cached 302s
+      // Cache busting ensures the router doesn't serve a cached login page
       const buster = `_ts=${Date.now()}`;
       const urlWithBuster = targetUrl.includes("?")
         ? `${targetUrl}&${buster}`
@@ -75,41 +54,36 @@ async function fetchWithResilience(
         ? urlWithBuster
         : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(
-        () => controller.abort(),
-        isDirect ? 5000 : 15000,
-      );
-
-      /**
-       * CORS PREFLIGHT BYPASS STRATEGY:
-       * If using a bridge, we avoid "application/json" content-type because it triggers
-       * a CORS OPTIONS request which many proxies/routers block.
-       * Instead, for Tunnels, we move the payload to the URL.
-       */
       let fetchOptions: RequestInit = {
         ...options,
-        signal: controller.signal,
         mode: "cors",
+        credentials: "omit",
       };
 
+      /**
+       * BYPASSING CORS PREFLIGHT:
+       * Your console logs showed "Response to preflight request doesn't pass access control".
+       * To fix this, we avoid sending 'application/json' via bridges.
+       */
       if (!isDirect) {
-        // Simple request optimization: strip custom headers
-        fetchOptions.headers = { Accept: "application/json" };
-
-        if (options.method === "POST") {
-          if (isTunnel) {
-            // AllOrigins Tunnel: Convert POST to GET to bypass CORS Preflight
-            fullUrl += `&payload=${encodeURIComponent(options.body as string)}`;
-            fetchOptions.method = "GET";
-            delete fetchOptions.body;
-          } else {
-            // Standard Proxy: keep POST but use simple content type
-            (fetchOptions.headers as any)["Content-Type"] = "text/plain";
-          }
+        if (isTunnel && options.method === "POST") {
+          // AllOrigins Tunnel Strategy:
+          // We attach the JSON body to the URL and use GET.
+          // This is a "Simple Request" that does NOT trigger CORS Preflight.
+          fullUrl += `&payload=${encodeURIComponent(options.body as string)}`;
+          fetchOptions.method = "GET";
+          delete fetchOptions.body;
+          fetchOptions.headers = { Accept: "application/json" };
+        } else {
+          // Standard Proxy Strategy:
+          // We use text/plain to avoid the "OPTIONS" preflight check.
+          fetchOptions.headers = {
+            "Content-Type": "text/plain",
+            Accept: "application/json",
+          };
         }
       } else {
-        // Direct attempt: Standard headers
+        // Direct attempt uses standard JSON headers
         fetchOptions.headers = {
           ...options.headers,
           "Content-Type": "application/json",
@@ -117,59 +91,49 @@ async function fetchWithResilience(
       }
 
       const response = await fetch(fullUrl, fetchOptions);
-      clearTimeout(timeoutId);
 
-      // Check for Captive Portal hijacking (returns HTML instead of JSON)
+      // 1. Detect Router Hijacking (Status 200 but HTML content)
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("PORTAL_BLOCK: Router intercepted request");
+        throw new Error("PORTAL_HIJACK: Router is asking for login.");
       }
 
-      // Handle Proxy wrapping
-      const finalResponse = await unwrapResponse(response, bridge.type);
-
-      if (finalResponse.ok || finalResponse.status < 500) {
-        return finalResponse;
+      // 2. Unwrap AllOrigins Bridge
+      if (isTunnel) {
+        const wrapper = await response.json();
+        if (wrapper.contents) {
+          // AllOrigins wraps the API response inside 'contents'
+          return new Response(wrapper.contents, {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
       }
 
-      throw new Error(`Status ${finalResponse.status}`);
+      // 3. Handle Standard Responses
+      if (response.ok) return response;
+
+      // Handle specific error codes
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.detail || `Error ${response.status}`);
     } catch (err: any) {
-      const errorMsg = err.name === "AbortError" ? "Timeout" : err.message;
       lastBridgeLogs.push({
         bridge: bridge.name,
-        error: errorMsg,
+        error: err.message || "Connection Failed",
         timestamp: new Date().toLocaleTimeString(),
       });
-      throw err;
+      // Logic continues to loop to the next bridge in the BRIDGES array
     }
-  });
+  }
 
-  // Racing the bridges: Return the first one that succeeds
-  return new Promise((resolve, reject) => {
-    let failedCount = 0;
-    let resolved = false;
-
-    attempts.forEach((p) => {
-      p.then((res) => {
-        if (!resolved) {
-          resolved = true;
-          resolve(res);
-        }
-      }).catch(() => {
-        failedCount++;
-        if (failedCount === attempts.length && !resolved) {
-          const details = lastBridgeLogs
-            .map((l) => `${l.bridge}: ${l.error}`)
-            .join(" | ");
-          reject(new Error(`All paths blocked by router. Details: ${details}`));
-        }
-      });
-    });
-  });
+  // If we reach here, all bridges failed
+  const lastError =
+    lastBridgeLogs[lastBridgeLogs.length - 1]?.error || "Network Blocked";
+  throw new Error(lastError);
 }
 
 /**
- * EXPORTED API FUNCTIONS
+ * EXPORTED API ACTIONS
  */
 
 export const registerUser = async (
@@ -181,7 +145,10 @@ export const registerUser = async (
   });
 };
 
-export const loginUser = async (data: LoginPayload): Promise<Response> => {
+export const loginUser = async (data: {
+  username: string;
+  password: string;
+}): Promise<Response> => {
   const url = `${API_ENDPOINT}token/`;
   return await fetchWithResilience(url, {
     method: "POST",
