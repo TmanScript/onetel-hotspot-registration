@@ -24,6 +24,7 @@ import {
   WifiOff,
   ServerCrash,
   Radio,
+  ZapOff,
 } from "lucide-react";
 import CryptoJS from "crypto-js";
 import Input from "./components/Input";
@@ -359,8 +360,7 @@ const App: React.FC = () => {
           <div className="hidden lg:flex flex-col justify-between p-12 bg-pink-500 text-white relative overflow-hidden">
             <div className="relative z-10">
               <div className="flex items-center gap-2 mb-4 bg-white/20 w-fit px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-                <Radio className="w-3 h-3 animate-pulse" /> Multi-Bridge Race
-                Enabled
+                <ShieldCheck className="w-3 h-3" /> Stealth Encryption v5.2
               </div>
               <h2 className="text-4xl font-bold leading-tight mb-6">
                 Join Onetel
@@ -576,7 +576,8 @@ const App: React.FC = () => {
         <div className="hidden lg:flex flex-col justify-between p-12 bg-pink-500 text-white relative overflow-hidden">
           <div className="relative z-10">
             <div className="flex items-center gap-2 mb-4 bg-white/20 w-fit px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
-              <Radio className="w-3 h-3 animate-pulse" /> Resilience Core v5.1
+              <Radio className="w-3 h-3 animate-pulse" /> Resilience Core v5.2
+              (Hyper-Path)
             </div>
             <h2 className="text-4xl font-bold leading-tight mb-6">
               Fast WiFi
@@ -589,7 +590,7 @@ const App: React.FC = () => {
             <div className="bg-black/10 backdrop-blur-md rounded-2xl p-5 border border-white/10 shadow-inner">
               <div className="flex items-center justify-between mb-4">
                 <p className="text-[10px] font-black uppercase tracking-widest text-pink-100 flex items-center gap-2">
-                  <Activity className="w-3 h-3" /> Connection Monitor
+                  <Activity className="w-3 h-3" /> Stealth Paths
                 </p>
                 {bridgeHistory.length > 0 && (
                   <button
@@ -682,22 +683,21 @@ const App: React.FC = () => {
                 <XCircle className="w-5 h-5 mt-0.5 shrink-0" />
                 <div className="flex-1">
                   <span className="leading-relaxed">{errorMessage}</span>
-                  {(errorMessage.includes("blocked") ||
-                    errorMessage.includes("fetch") ||
-                    errorMessage.includes("Connection path")) && (
-                    <div className="mt-2 p-2 bg-orange-100 rounded-lg text-orange-700 space-y-1">
+                  {errorMessage.includes("blocking all access") && (
+                    <div className="mt-2 p-3 bg-red-100 rounded-lg text-red-700 space-y-2 border border-red-200 shadow-sm">
                       <div className="flex items-center gap-2 font-black uppercase text-[8px]">
-                        <AlertTriangle className="w-3 h-3" /> Connection Blocked
+                        <ZapOff className="w-3 h-3" /> Hard Router Block
                       </div>
-                      <p className="text-[9px] leading-tight">
-                        The router is currently hijacking all secure paths. Try
-                        toggling your WiFi off and on, then refresh.
+                      <p className="text-[9px] leading-tight font-medium">
+                        The router is redirecting your secure traffic. To fix
+                        this instantly, <b>copy the recovery domain list</b>{" "}
+                        below into your router's uamallowed list.
                       </p>
                       <button
                         onClick={() => window.location.reload()}
-                        className="mt-2 text-[8px] font-bold underline"
+                        className="text-[8px] font-black uppercase tracking-widest underline decoration-2"
                       >
-                        Emergency Refresh
+                        Restart Portal
                       </button>
                     </div>
                   )}
@@ -743,6 +743,7 @@ const App: React.FC = () => {
           <div className="flex items-center justify-between mb-4">
             <h4 className="text-[10px] font-black text-gray-800 uppercase tracking-widest flex items-center gap-2">
               <ServerCrash className="w-4 h-4 text-pink-500" /> Portal Rescue
+              Kit
             </h4>
             <button
               onClick={() => setShowHelper(false)}
@@ -771,7 +772,7 @@ const App: React.FC = () => {
 
       <p className="mt-8 text-center text-gray-400 text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
         <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
-        Onetel Network • Parallel Bridge Race v5.1
+        Onetel Network • Hyper-Path v5.2 (Stealth Active)
       </p>
     </div>
   );

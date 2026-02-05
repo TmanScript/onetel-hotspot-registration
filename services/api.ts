@@ -2,7 +2,8 @@ import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
 export const BRIDGES = [
-  { name: "Direct Path", proxy: "", type: "direct" },
+  { name: "Direct Path (Secure)", proxy: "", type: "direct" },
+  { name: "Direct Path (Fast)", proxy: "", type: "direct_http" },
   { name: "Cloud Bridge A", proxy: "https://corsproxy.io/?", type: "standard" },
   {
     name: "Cloud Bridge B",
@@ -14,6 +15,7 @@ export const BRIDGES = [
     proxy: "https://api.allorigins.win/raw?url=",
     type: "allorigins",
   },
+  { name: "Stealth Bridge", proxy: "https://proxy.cors.sh/", type: "cors_sh" },
 ];
 
 export interface BridgeError {
@@ -25,17 +27,8 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * Converts an object to application/x-www-form-urlencoded string.
- */
-function toFormData(obj: any): string {
-  return Object.keys(obj)
-    .map((key) => encodeURIComponent(key) + "=" + encodeURIComponent(obj[key]))
-    .join("&");
-}
-
-/**
- * FETCH WITH RESILIENCE v5.1 - BRIDGE RACE
- * Attempts multiple paths in parallel to bypass restrictive Hotspot Walled Gardens.
+ * FETCH WITH HYPER-RESILIENCE v5.2
+ * Uses stealth techniques to bypass hotspot router interceptions.
  */
 async function fetchWithResilience(
   targetUrl: string,
@@ -43,21 +36,30 @@ async function fetchWithResilience(
 ): Promise<Response> {
   lastBridgeLogs = [];
 
-  // Define individual bridge attempts
   const attempts = BRIDGES.map(async (bridge) => {
     try {
-      const isDirect = bridge.type === "direct";
-      const fullUrl = isDirect
-        ? targetUrl
-        : `${bridge.proxy}${encodeURIComponent(targetUrl)}`;
+      let finalUrl = targetUrl;
+      const isDirect = bridge.type.startsWith("direct");
 
-      // AllOrigins is GET only for the raw proxy
-      if (bridge.type === "allorigins" && options.method !== "GET") {
-        throw new Error("Bridge incompatible with POST");
+      // Protocol Fallback for Direct
+      if (bridge.type === "direct_http") {
+        finalUrl = targetUrl.replace("https://", "http://");
       }
 
+      // Add cache buster to prevent router from serving old "blocked" responses
+      const urlWithBuster = new URL(finalUrl);
+      urlWithBuster.searchParams.set("_cb", Date.now().toString());
+      const processedUrl = urlWithBuster.toString();
+
+      const fullUrl = isDirect
+        ? processedUrl
+        : `${bridge.proxy}${encodeURIComponent(processedUrl)}`;
+
+      if (bridge.type === "allorigins" && options.method !== "GET")
+        throw new Error("GET only");
+
       const controller = new AbortController();
-      const timeout = isDirect ? 5000 : 15000;
+      const timeout = isDirect ? 4000 : 15000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       const currentHeaders: Record<string, string> = {
@@ -65,21 +67,15 @@ async function fetchWithResilience(
         Accept: "application/json",
       };
 
-      let currentBody = options.body;
-
-      // Use "Simple Request" (Form Data) for Direct to avoid preflight OPTIONS block
-      if (
-        isDirect &&
-        options.method === "POST" &&
-        typeof options.body === "string"
-      ) {
-        try {
-          const jsonBody = JSON.parse(options.body);
-          currentBody = toFormData(jsonBody);
-          currentHeaders["Content-Type"] = "application/x-www-form-urlencoded";
-        } catch (e) {
-          currentHeaders["Content-Type"] = "application/json";
-        }
+      /**
+       * STEALTH STRATEGY:
+       * We send content as 'text/plain' for direct paths.
+       * This makes the request a "Simple Request" in CORS terms.
+       * Simple Requests do NOT trigger the 'OPTIONS' preflight check which
+       * is what most hotspot routers block.
+       */
+      if (isDirect && options.method === "POST") {
+        currentHeaders["Content-Type"] = "text/plain";
       } else {
         currentHeaders["Content-Type"] = "application/json";
       }
@@ -87,7 +83,6 @@ async function fetchWithResilience(
       const response = await fetch(fullUrl, {
         ...options,
         headers: currentHeaders,
-        body: currentBody,
         signal: controller.signal,
         mode: "cors",
         credentials: "omit",
@@ -95,14 +90,14 @@ async function fetchWithResilience(
 
       clearTimeout(timeoutId);
 
-      // Detection of Hotspot Interception
+      // Interception Detection (200 OK but HTML content)
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("Intercepted by Router");
+        throw new Error("Router Hijacked Connection");
       }
 
       if (response.status > 0) return response;
-      throw new Error(`Status ${response.status}`);
+      throw new Error(`Err ${response.status}`);
     } catch (err: any) {
       const msg = err.name === "AbortError" ? "Timeout" : err.message;
       lastBridgeLogs.push({
@@ -114,22 +109,22 @@ async function fetchWithResilience(
     }
   });
 
-  // RACE: Return the first successful response
-  // We use a custom 'any' logic because we want the first OK response, not just the first settled one.
   return new Promise((resolve, reject) => {
-    let finished = 0;
+    let finishedCount = 0;
+    let hasResolved = false;
+
     attempts.forEach((p) => {
       p.then((res) => {
-        if (!finished) {
-          finished = 1;
+        if (!hasResolved) {
+          hasResolved = true;
           resolve(res);
         }
-      }).catch((err) => {
-        finished++;
-        if (finished === attempts.length) {
+      }).catch(() => {
+        finishedCount++;
+        if (finishedCount === attempts.length && !hasResolved) {
           reject(
             new Error(
-              "All connection paths are currently blocked by the router.",
+              "Connection failed: The hotspot router is blocking all access to the Onetel login server.",
             ),
           );
         }
