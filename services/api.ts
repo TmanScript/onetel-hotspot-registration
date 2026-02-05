@@ -1,23 +1,38 @@
 import { RegistrationPayload, LoginPayload } from "../types";
 import { API_ENDPOINT } from "../constants";
 
-export const BRIDGES = [
-  { name: "Direct Cloud", proxy: "", type: "direct" },
+export interface Bridge {
+  name: string;
+  proxy: string;
+  type: "direct" | "standard" | "tunnel" | "raw";
+  supportsPost: boolean;
+}
+
+export const BRIDGES: Bridge[] = [
+  { name: "Direct Cloud", proxy: "", type: "direct", supportsPost: true },
   {
-    name: "Rescue Shadow (Raw)",
-    proxy: "https://api.allorigins.win/raw?url=",
-    type: "raw",
+    name: "Bridge Alpha",
+    proxy: "https://corsproxy.io/?",
+    type: "standard",
+    supportsPost: true,
   },
   {
-    name: "Tunnel Shadow (Get)",
-    proxy: "https://api.allorigins.win/get?url=",
-    type: "tunnel",
+    name: "Bridge Gamma",
+    proxy: "https://thingproxy.freeboard.io/fetch/",
+    type: "standard",
+    supportsPost: true,
   },
-  { name: "Mirror Path A", proxy: "https://corsproxy.io/?", type: "standard" },
   {
-    name: "Mirror Path B",
+    name: "Bridge Delta",
     proxy: "https://api.codetabs.com/v1/proxy/?quest=",
     type: "standard",
+    supportsPost: true,
+  },
+  {
+    name: "Data Tunnel",
+    proxy: "https://api.allorigins.win/raw?url=",
+    type: "raw",
+    supportsPost: true,
   },
 ];
 
@@ -30,89 +45,85 @@ export interface BridgeError {
 export let lastBridgeLogs: BridgeError[] = [];
 
 /**
- * FETCH WITH SHADOW RESILIENCE v5.4
- * Sophisticated unwrapping and multi-path execution.
+ * FETCH WITH ENGINE X RESILIENCE v5.8
+ * Aggressive multi-path race with header optimization to bypass router OPTIONS blocking.
  */
 async function fetchWithResilience(
   targetUrl: string,
   options: RequestInit,
 ): Promise<Response> {
   lastBridgeLogs = [];
+  const isPost = options.method === "POST";
 
-  const attempts = BRIDGES.map(async (bridge) => {
+  // Filter compatible bridges
+  const compatibleBridges = BRIDGES.filter((b) => !isPost || b.supportsPost);
+
+  const attempts = compatibleBridges.map(async (bridge) => {
     try {
       const isDirect = bridge.type === "direct";
-      const isTunnel = bridge.type === "tunnel";
-      const isRaw = bridge.type === "raw";
 
-      // Aggressive cache busting
-      const buster = `_shadow=${Date.now()}_${Math.random().toString(36).substring(5)}`;
+      // Dynamic Cache Busting to force router re-evaluation
+      const buster = `_ex8=${Date.now()}_${Math.random().toString(36).substring(8)}`;
       const urlWithBuster = targetUrl.includes("?")
         ? `${targetUrl}&${buster}`
         : `${targetUrl}?${buster}`;
 
-      let fullUrl = isDirect
+      const fullUrl = isDirect
         ? urlWithBuster
         : `${bridge.proxy}${encodeURIComponent(urlWithBuster)}`;
 
       const controller = new AbortController();
-      // Increase timeout for slow hotspot DNS
-      const timeout = isDirect ? 5000 : 25000;
+      const timeout = isDirect ? 4000 : 20000;
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-      const currentHeaders: Record<string, string> = {
+      const headers: Record<string, string> = {
         ...Object.fromEntries(Object.entries(options.headers || {})),
         Accept: "application/json",
       };
 
-      let fetchOptions: RequestInit = {
+      // v5.8 Optimization: Only add JSON content-type if there is a body.
+      // Hotspots often block 'application/json' in pre-flights.
+      if (options.body) {
+        headers["Content-Type"] = "application/json";
+      }
+
+      const fetchOptions: RequestInit = {
         ...options,
+        headers,
         signal: controller.signal,
         mode: "cors",
         credentials: "omit",
       };
 
-      // v5.4 Strategy: GET-Tunneling for POSTs
-      if ((isTunnel || isRaw) && options.method === "POST") {
-        const tunnelUrl = `${bridge.proxy}${encodeURIComponent(urlWithBuster)}&payload=${encodeURIComponent(options.body as string)}`;
-        fullUrl = tunnelUrl;
-        fetchOptions = { method: "GET", signal: controller.signal };
-      } else if (isDirect && options.method === "POST") {
-        currentHeaders["Content-Type"] = "text/plain";
-        fetchOptions.headers = currentHeaders;
-      } else {
-        currentHeaders["Content-Type"] = "application/json";
-        fetchOptions.headers = currentHeaders;
-      }
-
       const response = await fetch(fullUrl, fetchOptions);
       clearTimeout(timeoutId);
 
-      // Detection of Hotspot Interception
+      // Check for Router Interception (Captive Portal Redirects)
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("text/html") && response.status === 200) {
-        throw new Error("Router Hijacked: Return HTML instead of Data");
-      }
-
-      /**
-       * SHADOW UNWRAPPER:
-       * If we used the 'tunnel' bridge, the response is a JSON object with a 'contents' key.
-       * We need to "unwrap" it to get the actual Onetel API response.
-       */
-      if (isTunnel) {
-        const wrapper = await response.json();
-        if (wrapper.contents) {
-          return new Response(wrapper.contents, {
-            status: wrapper.status?.http_code || 200,
-            headers: { "Content-Type": "application/json" },
-          });
+        const text = await response.clone().text();
+        if (
+          text.toLowerCase().includes("chilli") ||
+          text.toLowerCase().includes("login") ||
+          text.toLowerCase().includes("uam")
+        ) {
+          throw new Error("Router Intercepted Bridge");
         }
       }
 
-      if (response.status > 0) return response;
-      throw new Error(`Path Rejected (${response.status})`);
+      // Handle common proxy errors
+      if (response.status === 403) throw new Error("Bridge Forbidden (403)");
+      if (response.status === 405) throw new Error("Method Not Allowed (405)");
+      if (response.status === 429) throw new Error("Bridge Rate Limited (429)");
+
+      // If we got a response from the Onetel server (even a 400/401), the path is clear
+      if (response.ok || (response.status >= 400 && response.status < 500)) {
+        return response;
+      }
+
+      throw new Error(`Path Error (${response.status})`);
     } catch (err: any) {
-      const msg = err.name === "AbortError" ? "DNS/Path Timeout" : err.message;
+      const msg = err.name === "AbortError" ? "Path Timeout" : err.message;
       lastBridgeLogs.push({
         bridge: bridge.name,
         error: msg,
@@ -135,11 +146,13 @@ async function fetchWithResilience(
       }).catch(() => {
         failedCount++;
         if (failedCount === attempts.length && !resolved) {
-          const detailedErrors = lastBridgeLogs
-            .map((l) => `[${l.bridge}: ${l.error}]`)
-            .join(" ");
+          const summary = lastBridgeLogs
+            .map((l) => `${l.bridge}: ${l.error}`)
+            .join(" | ");
           reject(
-            new Error(`All paths blocked by router. Logs: ${detailedErrors}`),
+            new Error(
+              `Security Alert: The hotspot is blocking the secure authentication tunnel. Ensure 'thingproxy.freeboard.io' is added to your uamallowed list. [Trace: ${summary}]`,
+            ),
           );
         }
       });
